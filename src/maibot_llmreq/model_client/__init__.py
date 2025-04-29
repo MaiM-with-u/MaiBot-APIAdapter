@@ -16,6 +16,108 @@ from ..usage_statistic import ModelUsageStatistic, UsageCallStatus
 from ..utils import compress_messages
 
 
+def _handle_network_error(
+    task_name: str,
+    model_name: str,
+    remain_try: int,
+    retry_interval: int = 10,
+):
+    if remain_try > 0:
+        # 还有重试机会
+        logger.warning(
+            f"任务-'{task_name}' 模型-'{model_name}'\n"
+            f"连接异常，将于{retry_interval}秒后重试"
+        )
+        return retry_interval, None
+    else:
+        # 达到最大重试次数
+        logger.error(
+            f"任务-'{task_name}' 模型-'{model_name}'"
+            f"连接异常，超过最大重试次数，请检查网络连接状态或URL是否正确"
+        )
+        return -1, None  # 不再重试请求该模型
+
+
+def _handle_resp_not_ok(
+    e: RespNotOkException,
+    task_name: str,
+    model_name: str,
+    remain_try: int,
+    retry_interval: int = 10,
+    messages: tuple[list[Message], bool] | None = None,
+):
+    # 响应错误
+    if e.status_code in [400, 401, 402, 403, 404]:
+        # 客户端错误
+        logger.error(
+            f"任务-'{task_name}' 模型-'{model_name}'\n"
+            f"请求失败，错误代码-{e.status_code}，错误信息-{e.message}"
+        )
+        return -1, None  # 不再重试请求该模型
+    elif e.status_code == 413:
+        # 请求体过大
+        if messages:
+            if not messages[1]:
+                # 尝试压缩消息
+                logger.warning(
+                    f"任务-'{task_name}' 模型-'{model_name}'\n"
+                    "请求体过大，尝试压缩消息后重试"
+                )
+                return 0, compress_messages(messages[0])
+            else:
+                logger.error(
+                    f"任务-'{task_name}' 模型-'{model_name}'\n"
+                    "压缩后消息仍然过大，放弃请求。"
+                )
+                return -1, None  # 不再重试请求该模型
+        else:
+            # 没有消息可压缩
+            logger.error(
+                f"任务-'{task_name}' 模型-'{model_name}'\n"
+                "请求体过大，无法压缩消息，放弃请求。"
+            )
+            return -1, None
+    elif e.status_code == 429:
+        # 请求过于频繁
+        if remain_try > 0:
+            # 还有重试机会
+            logger.warning(
+                f"任务-'{task_name}' 模型-'{model_name}'\n"
+                f"请求过于频繁，将于{retry_interval}秒后重试"
+            )
+            return retry_interval, None
+        else:
+            # 达到最大重试次数
+            logger.error(
+                f"任务-'{task_name}' 模型-'{model_name}'\n"
+                f"请求过于频繁，超过最大重试次数，请稍后再试"
+            )
+            return -1, None  # 不再重试请求该模型
+    elif e.status_code >= 500:
+        # 服务器错误
+        if remain_try > 0:
+            # 还有重试机会
+            logger.warning(
+                f"任务-'{task_name}' 模型-'{model_name}'\n"
+                f"服务器错误，将于{retry_interval}秒后重试"
+            )
+            return retry_interval, None
+        else:
+            # 达到最大重试次数
+            logger.error(
+                f"任务-'{task_name}' 模型-'{model_name}'\n"
+                f"服务器错误，超过最大重试次数，请稍后再试"
+            )
+            return -1, None  # 不再重试请求该模型
+    else:
+        # 未知错误
+        logger.error(
+            f"任务-'{task_name}' 模型-'{model_name}'\n"
+            f"未知错误，错误代码-{e.status_code}，错误信息-{e.message}"
+        )
+        return -1, None
+
+
 def default_exception_handler(
     e: Exception,
     task_name: str,
@@ -36,96 +138,26 @@ def default_exception_handler(
     """
 
     if isinstance(e, NetworkConnectionError):  # 网络连接错误
-        if remain_try > 0:
-            # 还有重试机会
-            logger.warning(
-                f"任务-'{task_name}' 模型-'{model_name}'\n"
-                f"连接异常，将于{retry_interval}秒后重试"
-            )
-            return retry_interval, None
-        else:
-            # 达到最大重试次数
-            logger.error(
-                f"任务-'{task_name}' 模型-'{model_name}'"
-                f"连接异常，超过最大重试次数，请检查网络连接状态或URL是否正确"
-            )
-            return -1, None  # 不再重试请求该模型
+        return _handle_network_error(
+            task_name,
+            model_name,
+            remain_try,
+            retry_interval,
+        )
     elif isinstance(e, ReqAbortException):
         # 请求被中断
         # TODO: 流式输出模式适配
         logger.warning(f"任务-'{task_name}' 模型-'{model_name}'\n请求被中断")
         return -1, None  # 不再重试请求该模型
     elif isinstance(e, RespNotOkException):
-        # 响应错误
-        if e.status_code in [400, 401, 402, 403, 404]:
-            # 客户端错误
-            logger.error(
-                f"任务-'{task_name}' 模型-'{model_name}'\n"
-                f"请求失败，错误代码-{e.status_code}，错误信息-{e.message}"
-            )
-            return -1, None  # 不再重试请求该模型
-        elif e.status_code == 413:
-            # 请求体过大
-            if messages:
-                if not messages[1]:
-                    # 尝试压缩消息
-                    logger.warning(
-                        f"任务-'{task_name}' 模型-'{model_name}'\n"
-                        "请求体过大，尝试压缩消息后重试"
-                    )
-                    return 0, compress_messages(messages[0])
-                else:
-                    logger.error(
-                        f"任务-'{task_name}' 模型-'{model_name}'\n"
-                        "压缩后消息仍然过大，放弃请求。"
-                    )
-                    return -1, None  # 不再重试请求该模型
-            else:
-                # 没有消息可压缩
-                logger.error(
-                    f"任务-'{task_name}' 模型-'{model_name}'\n"
-                    "请求体过大，无法压缩消息，放弃请求。"
-                )
-                return -1, None
-        elif e.status_code == 429:
-            # 请求过于频繁
-            if remain_try > 0:
-                # 还有重试机会
-                logger.warning(
-                    f"任务-'{task_name}' 模型-'{model_name}'\n"
-                    f"请求过于频繁，将于{retry_interval}秒后重试"
-                )
-                return retry_interval, None
-            else:
-                # 达到最大重试次数
-                logger.error(
-                    f"任务-'{task_name}' 模型-'{model_name}'\n"
-                    f"请求过于频繁，超过最大重试次数，请稍后再试"
-                )
-                return -1, None  # 不再重试请求该模型
-        elif e.status_code >= 500:
-            # 服务器错误
-            if remain_try > 0:
-                # 还有重试机会
-                logger.warning(
-                    f"任务-'{task_name}' 模型-'{model_name}'\n"
-                    f"服务器错误，将于{retry_interval}秒后重试"
-                )
-                return retry_interval, None
-            else:
-                # 达到最大重试次数
-                logger.error(
-                    f"任务-'{task_name}' 模型-'{model_name}'\n"
-                    f"服务器错误，超过最大重试次数，请稍后再试"
-                )
-                return -1, None  # 不再重试请求该模型
-        else:
-            # 未知错误
-            logger.error(
-                f"任务-'{task_name}' 模型-'{model_name}'\n"
-                f"未知错误，错误代码-{e.status_code}，错误信息-{e.message}"
-            )
-            return -1, None
+        return _handle_resp_not_ok(
+            e,
+            task_name,
+            model_name,
+            remain_try,
+            retry_interval,
+            messages,
+        )
     elif isinstance(e, RespParseException):
         # 响应解析错误
         logger.error(
@@ -185,7 +217,7 @@ class ModelRequestHandler:
         response_format: dict | None = None,  # 暂不启用
         stream_response_handler: callable = None,
         async_response_parser: callable = None,
-    ) -> APIResponse | None:
+    ) -> APIResponse:
         """
         获取对话响应
         :return:
@@ -269,12 +301,12 @@ class ModelRequestHandler:
                         compressed_messages = handle_res[1]
 
         logger.error(f"任务-'{self.task_name}' 请求执行失败，所有模型均不可用")
-        return None  # 所有请求尝试均失败
+        raise RuntimeError("请求失败，所有模型均不可用")  # 所有请求尝试均失败
 
     async def get_embedding(
         self,
         embedding_input: str,
-    ) -> APIResponse | None:
+    ) -> APIResponse:
         """
         获取嵌入向量
         :return:
@@ -331,4 +363,4 @@ class ModelRequestHandler:
                         await asyncio.sleep(handle_res[0])
 
         logger.error(f"任务-'{self.task_name}' 请求执行失败，所有模型均不可用")
-        return None  # 所有请求尝试均失败
+        raise RuntimeError("请求失败，所有模型均不可用")  # 所有请求尝试均失败

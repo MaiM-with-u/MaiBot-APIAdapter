@@ -1,10 +1,11 @@
 import os
 
-import loguru
 import tomli
 from packaging import version
 from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
+
+from .. import _logger as logger
 
 from .config import (
     ModelUsageConfigItem,
@@ -16,7 +17,7 @@ from .config import (
 )
 
 
-def _get_config_version(toml: dict, logger: loguru.Logger) -> Version:
+def _get_config_version(toml: dict) -> Version:
     """提取配置文件的 SpecifierSet 版本数据
     Args:
         toml[dict]: 输入的配置文件字典
@@ -49,110 +50,127 @@ def _get_config_version(toml: dict, logger: loguru.Logger) -> Version:
     return ver
 
 
-def load_config(config_path: str, logger: loguru.Logger) -> ModuleConfig:
-    """从TOML配置文件加载配置"""
-    config = ModuleConfig()
+def _request_conf(parent: dict, config: ModuleConfig):
+    request_conf_config = parent.get("request_conf")
+    config.req_conf.max_retry = request_conf_config.get(
+        "max_retry", config.req_conf.max_retry
+    )
+    config.req_conf.timeout = request_conf_config.get(
+        "timeout", config.req_conf.timeout
+    )
+    config.req_conf.retry_interval = request_conf_config.get(
+        "retry_interval", config.req_conf.retry_interval
+    )
+    config.req_conf.default_temperature = request_conf_config.get(
+        "default_temperature", config.req_conf.default_temperature
+    )
+    config.req_conf.default_max_tokens = request_conf_config.get(
+        "default_max_tokens", config.req_conf.default_max_tokens
+    )
 
-    def request_conf(parent: dict):
-        request_conf_config = parent.get("request_conf")
-        config.req_conf.max_retry = request_conf_config.get(
-            "max_retry", config.req_conf.max_retry
-        )
-        config.req_conf.timeout = request_conf_config.get(
-            "timeout", config.req_conf.timeout
-        )
-        config.req_conf.retry_interval = request_conf_config.get(
-            "retry_interval", config.req_conf.retry_interval
-        )
-        config.req_conf.default_temperature = request_conf_config.get(
-            "default_temperature", config.req_conf.default_temperature
-        )
-        config.req_conf.default_max_tokens = request_conf_config.get(
-            "default_max_tokens", config.req_conf.default_max_tokens
-        )
 
-    def api_providers(parent: dict):
-        api_providers_config = parent.get("api_providers")
-        for provider in api_providers_config:
-            name = provider.get("name", None)
-            base_url = provider.get("base_url", None)
-            api_key = provider.get("api_key", None)
-            client_type = provider.get("client_type", "openai")
+def _api_providers(parent: dict, config: ModuleConfig):
+    api_providers_config = parent.get("api_providers")
+    for provider in api_providers_config:
+        name = provider.get("name", None)
+        base_url = provider.get("base_url", None)
+        api_key = provider.get("api_key", None)
+        client_type = provider.get("client_type", "openai")
 
-            if name in config.api_providers:  # 查重
-                logger.error(f"重复的API提供商名称: {name}，请检查配置文件。")
-                raise KeyError(f"重复的API提供商名称: {name}，请检查配置文件。")
+        if name in config.api_providers:  # 查重
+            logger.error(f"重复的API提供商名称: {name}，请检查配置文件。")
+            raise KeyError(f"重复的API提供商名称: {name}，请检查配置文件。")
 
-            if name and base_url:
-                config.api_providers[name] = APIProvider(
-                    name=name,
-                    base_url=base_url,
-                    api_key=api_key,
-                    client_type=client_type,
+        if name and base_url:
+            config.api_providers[name] = APIProvider(
+                name=name,
+                base_url=base_url,
+                api_key=api_key,
+                client_type=client_type,
+            )
+        else:
+            logger.error(f"API提供商 '{name}' 的配置不完整，请检查配置文件。")
+            raise ValueError(f"API提供商 '{name}' 的配置不完整，请检查配置文件。")
+
+
+def _models(parent: dict, config: ModuleConfig):
+    models_config = parent.get("models")
+    for model in models_config:
+        model_identifier = model.get("model_identifier", None)
+        name = model.get("name", model_identifier)
+        api_provider = model.get("api_provider", None)
+        price_in = model.get("price_in", 0.0)
+        price_out = model.get("price_out", 0.0)
+        force_stream_mode = model.get("force_stream_mode", False)
+
+        if name in config.models:  # 查重
+            logger.error(f"重复的模型名称: {name}，请检查配置文件。")
+            raise KeyError(f"重复的模型名称: {name}，请检查配置文件。")
+
+        if model_identifier and api_provider:
+            # 检查API提供商是否存在
+            if api_provider not in config.api_providers:
+                logger.error(f"未声明的API提供商 '{api_provider}' ，请检查配置文件。")
+                raise ValueError(
+                    f"未声明的API提供商 '{api_provider}' ，请检查配置文件。"
+                )
+            config.models[name] = ModelInfo(
+                name=name,
+                model_identifier=model_identifier,
+                api_provider=api_provider,
+                price_in=price_in,
+                price_out=price_out,
+                force_stream_mode=force_stream_mode,
+            )
+        else:
+            logger.error(f"模型 '{name}' 的配置不完整，请检查配置文件。")
+            raise ValueError(f"模型 '{name}' 的配置不完整，请检查配置文件。")
+
+
+def _task_model_usage(parent: dict, config: ModuleConfig):
+    config.task_model_usage_map = {}
+
+    model_usage_configs = parent.get("task_model_usage")
+
+    for task_name, item in model_usage_configs.items():
+        if task_name in config.task_model_usage_map:
+            logger.error(f"子任务 {task_name} 已存在，请检查配置文件。")
+            raise KeyError(f"子任务 {task_name} 已存在，请检查配置文件。")
+
+        usage = []
+        if isinstance(item, dict):
+            if "model" in item:
+                usage.append(
+                    ModelUsageConfigItem(
+                        name=item["model"],
+                        temperature=item.get("temperature", None),
+                        max_tokens=item.get("max_tokens", None),
+                        max_retry=item.get("max_retry", None),
+                    )
                 )
             else:
-                logger.error(f"API提供商 '{name}' 的配置不完整，请检查配置文件。")
-                raise ValueError(f"API提供商 '{name}' 的配置不完整，请检查配置文件。")
-
-    def models(parent: dict):
-        models_config = parent.get("models")
-        for model in models_config:
-            model_identifier = model.get("model_identifier", None)
-            name = model.get("name", model_identifier)
-            api_provider = model.get("api_provider", None)
-            price_in = model.get("price_in", 0.0)
-            price_out = model.get("price_out", 0.0)
-            force_stream_mode = model.get("force_stream_mode", False)
-
-            if name in config.models:  # 查重
-                logger.error(f"重复的模型名称: {name}，请检查配置文件。")
-                raise KeyError(f"重复的模型名称: {name}，请检查配置文件。")
-
-            if model_identifier and api_provider:
-                # 检查API提供商是否存在
-                if api_provider not in config.api_providers:
-                    logger.error(
-                        f"未声明的API提供商 '{api_provider}' ，请检查配置文件。"
-                    )
-                    raise ValueError(
-                        f"未声明的API提供商 '{api_provider}' ，请检查配置文件。"
-                    )
-                config.models[name] = ModelInfo(
-                    name=name,
-                    model_identifier=model_identifier,
-                    api_provider=api_provider,
-                    price_in=price_in,
-                    price_out=price_out,
-                    force_stream_mode=force_stream_mode,
+                logger.error(f"子任务 {task_name} 的模型配置不合法，请检查配置文件。")
+                raise ValueError(
+                    f"子任务 {task_name} 的模型配置不合法，请检查配置文件。"
                 )
-            else:
-                logger.error(f"模型 '{name}' 的配置不完整，请检查配置文件。")
-                raise ValueError(f"模型 '{name}' 的配置不完整，请检查配置文件。")
-
-    def task_model_usage(parent: dict):
-        """
-        解析toml配置文件
-        :param parent: toml配置文件内容
-        :return: 解析后的配置字典
-        """
-        config.task_model_usage_map = {}
-
-        model_usage_configs = parent.get("task_model_usage")
-
-        for task_name, item in model_usage_configs.items():
-            if task_name in config.task_model_usage_map:
-                logger.error(f"子任务 {task_name} 已存在，请检查配置文件。")
-                raise KeyError(f"子任务 {task_name} 已存在，请检查配置文件。")
-
-            usage = []
-            if isinstance(item, dict):
-                if "model" in item:
+        elif isinstance(item, list):
+            for model in item:
+                if isinstance(model, dict):
                     usage.append(
                         ModelUsageConfigItem(
-                            name=item["model"],
-                            temperature=item.get("temperature", None),
-                            max_tokens=item.get("max_tokens", None),
-                            max_retry=item.get("max_retry", None),
+                            name=model["model"],
+                            temperature=model.get("temperature", None),
+                            max_tokens=model.get("max_tokens", None),
+                            max_retry=model.get("max_retry", None),
+                        )
+                    )
+                elif isinstance(model, str):
+                    usage.append(
+                        ModelUsageConfigItem(
+                            name=model,
+                            temperature=None,
+                            max_tokens=None,
+                            max_retry=None,
                         )
                     )
                 else:
@@ -162,57 +180,35 @@ def load_config(config_path: str, logger: loguru.Logger) -> ModuleConfig:
                     raise ValueError(
                         f"子任务 {task_name} 的模型配置不合法，请检查配置文件。"
                     )
-            elif isinstance(item, list):
-                for model in item:
-                    if isinstance(model, dict):
-                        usage.append(
-                            ModelUsageConfigItem(
-                                name=model["model"],
-                                temperature=model.get("temperature", None),
-                                max_tokens=model.get("max_tokens", None),
-                                max_retry=model.get("max_retry", None),
-                            )
-                        )
-                    elif isinstance(model, str):
-                        usage.append(
-                            ModelUsageConfigItem(
-                                name=model,
-                                temperature=None,
-                                max_tokens=None,
-                                max_retry=None,
-                            )
-                        )
-                    else:
-                        logger.error(
-                            f"子任务 {task_name} 的模型配置不合法，请检查配置文件。"
-                        )
-                        raise ValueError(
-                            f"子任务 {task_name} 的模型配置不合法，请检查配置文件。"
-                        )
-            elif isinstance(item, str):
-                usage.append(
-                    ModelUsageConfigItem(
-                        name=item,
-                        temperature=None,
-                        max_tokens=None,
-                        max_retry=None,
-                    )
+        elif isinstance(item, str):
+            usage.append(
+                ModelUsageConfigItem(
+                    name=item,
+                    temperature=None,
+                    max_tokens=None,
+                    max_retry=None,
                 )
-
-            config.task_model_usage_map[task_name] = ModelUsageConfig(
-                name=task_name,
-                usage=usage,
             )
+
+        config.task_model_usage_map[task_name] = ModelUsageConfig(
+            name=task_name,
+            usage=usage,
+        )
+
+
+def load_config(config_path: str) -> ModuleConfig:
+    """从TOML配置文件加载配置"""
+    config = ModuleConfig()
 
     include_configs = {
         "request_conf": {
-            "func": request_conf,
+            "func": _request_conf,
             "support": ">=0.0.0",
             "necessary": False,
         },
-        "api_providers": {"func": api_providers, "support": ">=0.0.0"},
-        "models": {"func": models, "support": ">=0.0.0"},
-        "task_model_usage": {"func": task_model_usage, "support": ">=0.0.0"},
+        "api_providers": {"func": _api_providers, "support": ">=0.0.0"},
+        "models": {"func": _models, "support": ">=0.0.0"},
+        "task_model_usage": {"func": _task_model_usage, "support": ">=0.0.0"},
     }
 
     if os.path.exists(config_path):
@@ -246,7 +242,7 @@ def load_config(config_path: str, logger: loguru.Logger) -> ModuleConfig:
                     if "notice" in include_configs[key]:
                         logger.warning(include_configs[key]["notice"])
                     # 调用闭包函数处理配置
-                    include_configs[key]["func"](toml_dict)
+                    include_configs[key]["func"](toml_dict, config)
                 else:
                     # 如果版本不在支持范围内，崩溃并提示用户
                     logger.error(
