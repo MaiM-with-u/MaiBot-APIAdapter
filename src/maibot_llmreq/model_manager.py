@@ -2,34 +2,32 @@ import importlib
 
 from pymongo.synchronous.database import Database
 
-from .config.config import APIProvider, ModelInfo, ModelUsageConfig, RequestConfig
+from .config.config import (
+    ModelUsageConfig,
+    ModuleConfig,
+)
 
-from . import _logger as logger, _module_config as config
+from . import _logger as logger
 from .model_client import ModelRequestHandler, BaseClient
 from .usage_statistic import ModelUsageStatistic
 
 
 class ModelManager:
-    req_conf: RequestConfig  # 请求配置
-    api_provider_map: dict[str, APIProvider]  # API提供商列表
-    model_map: dict[str, ModelInfo]  # 模型列表
-    task_model_usage_config_map: dict[str, ModelUsageConfig]  # 任务的模型使用配置
+    config: ModuleConfig
     usage_statistic: ModelUsageStatistic  # 任务的使用统计信息
     api_client_map: dict[str, BaseClient]  # API客户端列表
     # TODO: 添加读写锁，防止异步刷新配置时发生数据竞争
 
     def __init__(
         self,
+        config: ModuleConfig,
         db: Database | None = None,
     ):
-        self.req_conf = config.req_conf
-        self.api_provider_map = config.api_providers
-        self.model_map = config.models
-        self.task_model_usage_config_map = config.task_model_usage_map
+        self.config = config
         self.usage_statistic = ModelUsageStatistic(db)
         self.api_client_map = {}
 
-        for provider_name, api_provider in self.api_provider_map.items():
+        for provider_name, api_provider in self.config.api_providers.items():
             # 初始化API客户端
             try:
                 # 根据配置动态加载实现
@@ -39,7 +37,7 @@ class ModelManager:
                 client_class = getattr(
                     client_module, f"{api_provider.client_type.capitalize()}Client"
                 )
-                if not issubclass(BaseClient, client_class):
+                if not issubclass(client_class, BaseClient):
                     raise TypeError(
                         f"'{client_class.__name__}' is not a subclass of 'BaseClient'"
                     )
@@ -58,7 +56,7 @@ class ModelManager:
         :param task_name: 任务名称
         :return: 模型客户端
         """
-        if task_name not in self.task_model_usage_config_map:
+        if task_name not in self.config.task_model_usage_map:
             raise KeyError(f"'{task_name}' not registered in ModelManager")
 
         return ModelRequestHandler(task_name=task_name, manager=self)
@@ -69,7 +67,7 @@ class ModelManager:
         :param task_name: 任务名称
         :param value: 模型使用配置
         """
-        self.task_model_usage_config_map[task_name] = value
+        self.config.task_model_usage_map[task_name] = value
 
     def __contains__(self, task_name: str):
         """
@@ -77,4 +75,4 @@ class ModelManager:
         :param task_name: 任务名称
         :return: 是否在模型列表中
         """
-        return task_name in self.task_model_usage_config_map
+        return task_name in self.config.task_model_usage_map

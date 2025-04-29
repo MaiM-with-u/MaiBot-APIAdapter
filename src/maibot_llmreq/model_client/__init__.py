@@ -1,8 +1,8 @@
 import asyncio
 
 from .base_client import BaseClient, APIResponse
-from .. import _logger as logger, _module_config as module_config
-from ..config.config import ModelInfo, ModelUsageConfigItem
+from .. import _logger as logger
+from ..config.config import ModelInfo, ModelUsageConfigItem, RequestConfig
 from ..exceptions import (
     NetworkConnectionError,
     ReqAbortException,
@@ -15,28 +15,13 @@ from ..payload_content.tool_option import ToolOption
 from ..usage_statistic import ModelUsageStatistic, UsageCallStatus
 from ..utils import compress_messages
 
-MODELS_NEEDING_TRANSFORMATION = [
-    "o1",
-    "o1-2024-12-17",
-    "o1-mini",
-    "o1-mini-2024-09-12",
-    "o1-preview",
-    "o1-preview-2024-09-12",
-    "o1-pro",
-    "o1-pro-2025-03-19",
-    "o3",
-    "o3-2025-04-16",
-    "o3-mini",
-    "o3-mini-2025-01-31o4-mini",
-    "o4-mini-2025-04-16",
-]
-
 
 def default_exception_handler(
     e: Exception,
     task_name: str,
     model_name: str,
     remain_try: int,
+    retry_interval: int = 10,
     messages: tuple[list[Message], bool] | None = None,
 ) -> tuple[int, list[Message] | None]:
     """
@@ -45,6 +30,7 @@ def default_exception_handler(
     :param task_name: 任务名称
     :param model_name: 模型名称
     :param remain_try: 剩余尝试次数
+    :param retry_interval: 重试间隔
     :param messages: (消息列表, 是否已压缩过)
     :return (等待间隔（如果为0则不等待，为-1则不再请求该模型）, 新的消息列表（适用于压缩消息）)
     """
@@ -54,9 +40,9 @@ def default_exception_handler(
             # 还有重试机会
             logger.warning(
                 f"任务-'{task_name}' 模型-'{model_name}'\n"
-                f"连接异常，将于{module_config.req_conf.retry_interval}秒后重试"
+                f"连接异常，将于{retry_interval}秒后重试"
             )
-            return module_config.req_conf.retry_interval, None
+            return retry_interval, None
         else:
             # 达到最大重试次数
             logger.error(
@@ -107,9 +93,9 @@ def default_exception_handler(
                 # 还有重试机会
                 logger.warning(
                     f"任务-'{task_name}' 模型-'{model_name}'\n"
-                    f"请求过于频繁，将于{module_config.req_conf.retry_interval}秒后重试"
+                    f"请求过于频繁，将于{retry_interval}秒后重试"
                 )
-                return module_config.req_conf.retry_interval, None
+                return retry_interval, None
             else:
                 # 达到最大重试次数
                 logger.error(
@@ -123,9 +109,9 @@ def default_exception_handler(
                 # 还有重试机会
                 logger.warning(
                     f"任务-'{task_name}' 模型-'{model_name}'\n"
-                    f"服务器错误，将于{module_config.req_conf.retry_interval}秒后重试"
+                    f"服务器错误，将于{retry_interval}秒后重试"
                 )
-                return module_config.req_conf.retry_interval, None
+                return retry_interval, None
             else:
                 # 达到最大重试次数
                 logger.error(
@@ -164,6 +150,7 @@ class ModelRequestHandler:
     client_map: dict[str, BaseClient]  # 客户端列表
     configs: list[(ModelInfo, ModelUsageConfigItem)]  # 模型使用配置
     usage_statistic: ModelUsageStatistic  # 任务的使用统计信息
+    req_conf: RequestConfig
 
     def __init__(
         self,
@@ -174,15 +161,16 @@ class ModelRequestHandler:
         self.client_map = {}
         self.configs = []
         self.usage_statistic = manager.usage_statistic
+        self.req_conf = manager.config.req_conf
 
         # 获取模型与使用配置
-        for model_usage in manager.task_model_usage_config_map[task_name].usage:
-            if model_usage.name not in manager.model_map:
+        for model_usage in manager.config.task_model_usage_map[task_name].usage:
+            if model_usage.name not in manager.config.models:
                 logger.error(f"Model '{model_usage.name}' not found in ModelManager")
                 raise KeyError(f"Model '{model_usage.name}' not found in ModelManager")
-            model_info = manager.model_map[model_usage.name]
+            model_info = manager.config.models[model_usage.name]
 
-            if model_info.api_provider not in manager.api_provider_map:
+            if model_info.api_provider not in self.client_map:
                 # 缓存API客户端
                 self.client_map[model_info.api_provider] = manager.api_client_map[
                     model_info.api_provider
@@ -209,7 +197,7 @@ class ModelRequestHandler:
             client = self.client_map[model_info.api_provider]
 
             remain_try = (
-                model_usage_config.max_retry or module_config.req_conf.max_retry
+                model_usage_config.max_retry or self.req_conf.max_retry
             ) + 1  # 初始化：剩余尝试次数 = 最大重试次数 + 1
 
             compressed_messages = None
@@ -230,10 +218,10 @@ class ModelRequestHandler:
                         tool_options=tool_options,
                         max_tokens=model_usage_config.max_tokens
                         if model_usage_config.max_tokens
-                        else module_config.req_conf.default_max_tokens,
+                        else self.req_conf.default_max_tokens,
                         temperature=model_usage_config.temperature
                         if model_usage_config.temperature
-                        else module_config.req_conf.default_temperature,
+                        else self.req_conf.default_temperature,
                         response_format=response_format,
                         stream_response_handler=stream_response_handler,
                         async_response_parser=async_response_parser,
@@ -266,6 +254,7 @@ class ModelRequestHandler:
                         self.task_name,
                         model_info.name,
                         remain_try,
+                        retry_interval=self.req_conf.retry_interval,
                         messages=(messages, compressed_messages is not None),
                     )
 
@@ -295,7 +284,7 @@ class ModelRequestHandler:
             model_usage_config: ModelUsageConfigItem = config[1]
             client = self.client_map[model_info.api_provider]
             remain_try = (
-                model_usage_config.max_retry or module_config.req_conf.max_retry
+                model_usage_config.max_retry or self.req_conf.max_retry
             ) + 1  # 初始化：剩余尝试次数 = 最大重试次数 + 1
 
             while remain_try:
@@ -331,6 +320,7 @@ class ModelRequestHandler:
                         self.task_name,
                         model_info.name,
                         remain_try,
+                        retry_interval=self.req_conf.retry_interval,
                     )
 
                     if handle_res[0] == -1:
