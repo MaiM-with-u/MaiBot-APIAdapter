@@ -222,7 +222,7 @@ def load_config(config_path: str) -> ModuleConfig:
                 exit(1)
 
         # 获取配置文件版本
-        config.INNER_VERSION = _get_config_version(toml_dict, logger)
+        config.INNER_VERSION = _get_config_version(toml_dict)
 
         # 检查版本
         if config.INNER_VERSION > Version(NEWEST_VER):

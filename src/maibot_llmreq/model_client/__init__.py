@@ -16,25 +16,32 @@ from ..usage_statistic import ModelUsageStatistic, UsageCallStatus
 from ..utils import compress_messages
 
 
-def _handle_network_error(
-    task_name: str,
-    model_name: str,
+def _check_retry(
     remain_try: int,
-    retry_interval: int = 10,
-):
+    retry_interval: int,
+    can_retry_msg: str,
+    cannot_retry_msg: str,
+    can_retry_callable: callable = None,
+    **kwargs,
+) -> tuple[int, None]:
+    """
+    辅助函数：检查是否可以重试
+    :param remain_try: 剩余尝试次数
+    :param retry_interval: 重试间隔
+    :param can_retry_msg: 可以重试时的提示信息
+    :param cannot_retry_msg: 不可以重试时的提示信息
+    :return: (等待间隔（如果为0则不等待，为-1则不再请求该模型）, 新的消息列表（适用于压缩消息）)
+    """
     if remain_try > 0:
         # 还有重试机会
-        logger.warning(
-            f"任务-'{task_name}' 模型-'{model_name}'\n"
-            f"连接异常，将于{retry_interval}秒后重试"
-        )
-        return retry_interval, None
+        logger.warning(f"{can_retry_msg}")
+        if can_retry_callable:
+            return retry_interval, can_retry_callable(**kwargs)
+        else:
+            return retry_interval, None
     else:
         # 达到最大重试次数
-        logger.error(
-            f"任务-'{task_name}' 模型-'{model_name}'"
-            f"连接异常，超过最大重试次数，请检查网络连接状态或URL是否正确"
-        )
+        logger.warning(f"{cannot_retry_msg}")
         return -1, None  # 不再重试请求该模型
 
 
@@ -46,72 +53,80 @@ def _handle_resp_not_ok(
     retry_interval: int = 10,
     messages: tuple[list[Message], bool] | None = None,
 ):
+    """
+    处理响应错误异常
+    :param e: 异常对象
+    :param task_name: 任务名称
+    :param model_name: 模型名称
+    :param remain_try: 剩余尝试次数
+    :param retry_interval: 重试间隔
+    :param messages: (消息列表, 是否已压缩过)
+    :return: (等待间隔（如果为0则不等待，为-1则不再请求该模型）, 新的消息列表（适用于压缩消息）)
+    """
     # 响应错误
     if e.status_code in [400, 401, 402, 403, 404]:
         # 客户端错误
-        logger.error(
+        logger.warning(
             f"任务-'{task_name}' 模型-'{model_name}'\n"
             f"请求失败，错误代码-{e.status_code}，错误信息-{e.message}"
         )
         return -1, None  # 不再重试请求该模型
     elif e.status_code == 413:
         # 请求体过大
-        if messages:
-            if not messages[1]:
-                # 尝试压缩消息
-                logger.warning(
+        if messages and not messages[1]:
+            # 消息列表不为空且未压缩，尝试压缩消息
+            _check_retry(
+                remain_try,
+                0,
+                can_retry_msg=(
                     f"任务-'{task_name}' 模型-'{model_name}'\n"
                     "请求体过大，尝试压缩消息后重试"
-                )
-                return 0, compress_messages(messages[0])
-            else:
-                logger.error(
+                ),
+                cannot_retry_msg=(
                     f"任务-'{task_name}' 模型-'{model_name}'\n"
-                    "压缩后消息仍然过大，放弃请求。"
-                )
-                return -1, None  # 不再重试请求该模型
+                    "请求体过大，压缩消息后仍然过大，放弃请求"
+                ),
+                can_retry_callable=compress_messages,
+                messages=messages[0],
+            )
         else:
             # 没有消息可压缩
-            logger.error(
+            logger.warning(
                 f"任务-'{task_name}' 模型-'{model_name}'\n"
                 "请求体过大，无法压缩消息，放弃请求。"
             )
             return -1, None
     elif e.status_code == 429:
         # 请求过于频繁
-        if remain_try > 0:
-            # 还有重试机会
-            logger.warning(
+        return _check_retry(
+            remain_try,
+            retry_interval,
+            can_retry_msg=(
                 f"任务-'{task_name}' 模型-'{model_name}'\n"
                 f"请求过于频繁，将于{retry_interval}秒后重试"
-            )
-            return retry_interval, None
-        else:
-            # 达到最大重试次数
-            logger.error(
+            ),
+            cannot_retry_msg=(
                 f"任务-'{task_name}' 模型-'{model_name}'\n"
-                f"请求过于频繁，超过最大重试次数，请稍后再试"
-            )
-            return -1, None  # 不再重试请求该模型
+                "请求过于频繁，超过最大重试次数，放弃请求"
+            ),
+        )
     elif e.status_code >= 500:
         # 服务器错误
-        if remain_try > 0:
-            # 还有重试机会
-            logger.warning(
+        return _check_retry(
+            remain_try,
+            retry_interval,
+            can_retry_msg=(
                 f"任务-'{task_name}' 模型-'{model_name}'\n"
                 f"服务器错误，将于{retry_interval}秒后重试"
-            )
-            return retry_interval, None
-        else:
-            # 达到最大重试次数
-            logger.error(
+            ),
+            cannot_retry_msg=(
                 f"任务-'{task_name}' 模型-'{model_name}'\n"
-                f"服务器错误，超过最大重试次数，请稍后再试"
-            )
-            return -1, None  # 不再重试请求该模型
+                "服务器错误，超过最大重试次数，请稍后再试"
+            ),
+        )
     else:
         # 未知错误
-        logger.error(
+        logger.warning(
             f"任务-'{task_name}' 模型-'{model_name}'\n"
             f"未知错误，错误代码-{e.status_code}，错误信息-{e.message}"
         )
@@ -138,11 +153,17 @@ def default_exception_handler(
     """
 
     if isinstance(e, NetworkConnectionError):  # 网络连接错误
-        return _handle_network_error(
-            task_name,
-            model_name,
+        return _check_retry(
             remain_try,
             retry_interval,
+            can_retry_msg=(
+                f"任务-'{task_name}' 模型-'{model_name}'\n"
+                f"连接异常，将于{retry_interval}秒后重试"
+            ),
+            cannot_retry_msg=(
+                f"任务-'{task_name}' 模型-'{model_name}'\n"
+                f"连接异常，超过最大重试次数，请检查网络连接状态或URL是否正确"
+            ),
         )
     elif isinstance(e, ReqAbortException):
         # 请求被中断
@@ -182,7 +203,7 @@ class ModelRequestHandler:
     client_map: dict[str, BaseClient]  # 客户端列表
     configs: list[(ModelInfo, ModelUsageConfigItem)]  # 模型使用配置
     usage_statistic: ModelUsageStatistic  # 任务的使用统计信息
-    req_conf: RequestConfig
+    req_conf: RequestConfig  # 请求配置
 
     def __init__(
         self,
@@ -220,19 +241,25 @@ class ModelRequestHandler:
     ) -> APIResponse:
         """
         获取对话响应
-        :return:
+        :param messages: 消息列表
+        :param tool_options: 工具选项列表
+        :param response_format: 响应格式
+        :param stream_response_handler: 流式响应处理函数
+        :param async_response_parser: 异步响应解析函数
+        :return: APIResponse
         """
         # 遍历可用模型，若获取响应失败，则使用下一个模型继续请求
         for config_item in self.configs:
+            client = self.client_map[config_item.api_provider]
             model_info: ModelInfo = config_item[0]
             model_usage_config: ModelUsageConfigItem = config_item[1]
-            client = self.client_map[model_info.api_provider]
 
             remain_try = (
                 model_usage_config.max_retry or self.req_conf.max_retry
             ) + 1  # 初始化：剩余尝试次数 = 最大重试次数 + 1
 
             compressed_messages = None
+            retry_interval = self.req_conf.retry_interval
             while remain_try > 0:
                 record_id: str | None = None
                 try:
@@ -296,6 +323,8 @@ class ModelRequestHandler:
                     elif handle_res[0] != 0:
                         # 等待间隔不为0，表示需要等待
                         await asyncio.sleep(handle_res[0])
+                        retry_interval *= 2
+
                     if handle_res[1] is not None:
                         # 压缩消息
                         compressed_messages = handle_res[1]
@@ -309,12 +338,13 @@ class ModelRequestHandler:
     ) -> APIResponse:
         """
         获取嵌入向量
-        :return:
+        :param embedding_input: 嵌入输入
+        :return: APIResponse
         """
         for config in self.configs:
+            client = self.client_map[config[0].api_provider]
             model_info: ModelInfo = config[0]
             model_usage_config: ModelUsageConfigItem = config[1]
-            client = self.client_map[model_info.api_provider]
             remain_try = (
                 model_usage_config.max_retry or self.req_conf.max_retry
             ) + 1  # 初始化：剩余尝试次数 = 最大重试次数 + 1
