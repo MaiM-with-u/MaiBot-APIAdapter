@@ -1,0 +1,77 @@
+[inner]
+version = "0.1.0"
+
+# 配置文件版本号迭代规则同bot_config.toml
+
+[request_conf] # 请求配置（此配置项数值均为默认值，如想修改，请取消对应条目的注释）
+#max_retry = 2 # 最大重试次数（单个模型API调用失败，最多重试的次数）
+#timeout = 10 # API调用的超时时长（超过这个时长，本次请求将被视为“请求超时”，单位：秒）
+#retry_interval = 10 # 重试间隔（如果API调用失败，重试的间隔时间，单位：秒）
+#default_temperature = 0.7 # 默认的温度（如果bot_config.toml中没有设置temperature参数，默认使用这个值）
+#default_max_tokens = 1024 # 默认的最大输出token数（如果bot_config.toml中没有设置max_tokens参数，默认使用这个值）
+
+
+[[api_providers]] # API服务提供商（可以配置多个）
+name = "DeepSeek"                       # API服务商名称（可随意命名，在models的api-provider中需使用这个命名）
+base_url = "https://api.deepseek.cn"    # API服务商的BaseURL
+key = "******"                          # API Key （可选，默认为None）
+client_type = "openai"                  # 请求客户端（可选，默认值为"openai"，使用gimini等Google系模型时请配置为"google"）
+
+#[[api_providers]] # 特殊：Google的Gimini使用特殊API，与OpenAI格式不兼容，需要配置client为"google"
+#name = "Google"
+#base_url = "https://api.google.com"
+#key = "******"
+#client_type = "google"
+#
+#[[api_providers]]
+#name = "SiliconFlow"
+#base_url = "https://api.siliconflow.cn"
+#key = "******"
+#
+#[[api_providers]]
+#name = "LocalHost"
+#base_url = "https://localhost:8888"
+#key = "lm-studio"
+
+
+[[models]] # 模型（可以配置多个）
+# 模型标识符（API服务商提供的模型标识符）
+model_identifier = "deepseek-chat"
+# 模型名称（可随意命名，在bot_config.toml中需使用这个命名）
+#（可选，若无该字段，则将自动使用model_identifier填充）
+name = "deepseek-v3"
+# API服务商名称（对应在api_providers中配置的服务商名称）
+api_provider = "DeepSeek"
+# 输入价格（用于API调用统计，单位：元/兆token）（可选，若无该字段，默认值为0）
+price_in = 2.0
+# 输出价格（用于API调用统计，单位：元/兆token）（可选，若无该字段，默认值为0）
+price_out = 8.0
+# 强制流式输出模式（若模型不支持非流式输出，请取消该注释，启用强制流式输出）
+#（可选，若无该字段，默认值为false）
+#force_stream_mode = true
+
+#[[models]]
+#model_identifier = "deepseek-reasoner"
+#name = "deepseek-r1"
+#api_provider = "DeepSeek"
+#model_flags = ["text", "tool_calling", "reasoning"]
+#price_in = 4.0
+#price_out = 16.0
+#
+#[[models]]
+#model_identifier = "BAAI/bge-m3"
+#name = "siliconflow-bge-m3"
+#api_provider = "SiliconFlow"
+#model_flags = ["text", "embedding"]
+#price_in = 0
+#price_out = 0
+
+
+[task_model_usage]
+#llm_reasoning = {model="deepseek-r1", temperature=0.8, max_tokens=1024, max_retry=0}
+#llm_normal = {model="deepseek-r1", max_tokens=1024, max_retry=0}
+#embedding = "siliconflow-bge-m3"
+#schedule = [
+#    "deepseek-v3",
+#    "deepseek-r1",
+#]

@@ -1,0 +1,6 @@
+pillow
+loguru
+pymongo
+tomli
+packaging
+openai
