@@ -11,6 +11,7 @@ from ..exceptions import (
 )
 from ..model_manager import ModelManager
 from ..payload_content.message import Message
+from ..payload_content.resp_format import RespFormat
 from ..payload_content.tool_option import ToolOption
 from ..usage_statistic import ModelUsageStatistic, UsageCallStatus
 from ..utils import compress_messages
@@ -235,7 +236,7 @@ class ModelRequestHandler:
         self,
         messages: list[Message],
         tool_options: list[ToolOption] = None,
-        response_format: dict | None = None,  # 暂不启用
+        response_format: RespFormat | None = None,  # 暂不启用
         stream_response_handler: callable = None,
         async_response_parser: callable = None,
     ) -> APIResponse:

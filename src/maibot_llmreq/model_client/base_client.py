@@ -1,3 +1,9 @@
+import asyncio
+from typing import Callable
+
+from openai import AsyncStream
+from openai.types.chat import ChatCompletionChunk, ChatCompletion
+
 from ..config.config import ModelInfo, APIProvider
 from ..payload_content.message import Message
 from ..payload_content.tool_option import ToolOption, ToolCall
@@ -44,8 +50,11 @@ class BaseClient:
         max_tokens: int = 1024,
         temperature: float = 0.7,
         response_format: dict | None = None,
-        stream_response_handler: callable = None,
-        async_response_parser: callable = None,
+        stream_response_handler: Callable[
+            [AsyncStream[ChatCompletionChunk], asyncio.Event | None], APIResponse
+        ] = None,
+        async_response_parser: Callable[[ChatCompletion], APIResponse] = None,
+        interrupt_flag: asyncio.Event = None,
     ) -> APIResponse:
         """
         获取对话响应
@@ -57,6 +66,7 @@ class BaseClient:
         :param response_format: 响应格式（可选，默认为 NotGiven ）
         :param stream_response_handler: 流式响应处理函数（可选，默认为default_stream_response_handler）
         :param async_response_parser: 响应解析函数（可选，默认为default_response_parser）
+        :param interrupt_flag: 中断信号量（可选，默认为None）
         :return: (响应文本, 推理文本, 工具调用, 其他数据)
         """
         raise RuntimeError("This method should be overridden in subclasses")

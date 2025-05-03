@@ -31,6 +31,7 @@ pymongo = "*"
 tomli = "*"
 packaging = "*"
 openai = "*"
+pydantic = "*"
 
 [project.optional-dependencies]
 test = [
