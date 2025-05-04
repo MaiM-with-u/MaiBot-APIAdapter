@@ -1,4 +1,5 @@
 import os
+from typing import Any, Dict, List
 
 import tomli
 from packaging import version
@@ -17,7 +18,7 @@ from .config import (
 )
 
 
-def _get_config_version(toml: dict) -> Version:
+def _get_config_version(toml: Dict) -> Version:
     """提取配置文件的 SpecifierSet 版本数据
     Args:
         toml[dict]: 输入的配置文件字典
@@ -50,7 +51,7 @@ def _get_config_version(toml: dict) -> Version:
     return ver
 
 
-def _request_conf(parent: dict, config: ModuleConfig):
+def _request_conf(parent: Dict, config: ModuleConfig):
     request_conf_config = parent.get("request_conf")
     config.req_conf.max_retry = request_conf_config.get(
         "max_retry", config.req_conf.max_retry
@@ -69,7 +70,7 @@ def _request_conf(parent: dict, config: ModuleConfig):
     )
 
 
-def _api_providers(parent: dict, config: ModuleConfig):
+def _api_providers(parent: Dict, config: ModuleConfig):
     api_providers_config = parent.get("api_providers")
     for provider in api_providers_config:
         name = provider.get("name", None)
@@ -93,7 +94,7 @@ def _api_providers(parent: dict, config: ModuleConfig):
             raise ValueError(f"API提供商 '{name}' 的配置不完整，请检查配置文件。")
 
 
-def _models(parent: dict, config: ModuleConfig):
+def _models(parent: Dict, config: ModuleConfig):
     models_config = parent.get("models")
     for model in models_config:
         model_identifier = model.get("model_identifier", None)
@@ -127,18 +128,16 @@ def _models(parent: dict, config: ModuleConfig):
             raise ValueError(f"模型 '{name}' 的配置不完整，请检查配置文件。")
 
 
-def _task_model_usage(parent: dict, config: ModuleConfig):
-    config.task_model_usage_map = {}
-
+def _task_model_usage(parent: Dict, config: ModuleConfig):
     model_usage_configs = parent.get("task_model_usage")
-
+    config.task_model_usage_map = {}
     for task_name, item in model_usage_configs.items():
         if task_name in config.task_model_usage_map:
             logger.error(f"子任务 {task_name} 已存在，请检查配置文件。")
             raise KeyError(f"子任务 {task_name} 已存在，请检查配置文件。")
 
         usage = []
-        if isinstance(item, dict):
+        if isinstance(item, Dict):
             if "model" in item:
                 usage.append(
                     ModelUsageConfigItem(
@@ -153,9 +152,9 @@ def _task_model_usage(parent: dict, config: ModuleConfig):
                 raise ValueError(
                     f"子任务 {task_name} 的模型配置不合法，请检查配置文件。"
                 )
-        elif isinstance(item, list):
+        elif isinstance(item, List):
             for model in item:
-                if isinstance(model, dict):
+                if isinstance(model, Dict):
                     usage.append(
                         ModelUsageConfigItem(
                             name=model["model"],
@@ -200,7 +199,7 @@ def load_config(config_path: str) -> ModuleConfig:
     """从TOML配置文件加载配置"""
     config = ModuleConfig()
 
-    include_configs = {
+    include_configs: Dict[str, Dict[str, Any]] = {
         "request_conf": {
             "func": _request_conf,
             "support": ">=0.0.0",
@@ -244,7 +243,7 @@ def load_config(config_path: str) -> ModuleConfig:
                     if "notice" in include_configs[key]:
                         logger.warning(include_configs[key]["notice"])
                     # 调用闭包函数处理配置
-                    include_configs[key]["func"](toml_dict, config)
+                    (include_configs[key]["func"])(toml_dict, config)
                 else:
                     # 如果版本不在支持范围内，崩溃并提示用户
                     logger.error(

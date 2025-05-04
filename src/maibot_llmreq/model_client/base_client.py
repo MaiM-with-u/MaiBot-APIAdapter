@@ -1,11 +1,12 @@
 import asyncio
-from typing import Callable
+from typing import Callable, Any, List, Tuple
 
 from openai import AsyncStream
 from openai.types.chat import ChatCompletionChunk, ChatCompletion
 
 from ..config.config import ModelInfo, APIProvider
 from ..payload_content.message import Message
+from ..payload_content.resp_format import RespFormat
 from ..payload_content.tool_option import ToolOption, ToolCall
 
 
@@ -16,12 +17,12 @@ class APIResponse:
 
     content: str | None  # 响应内容
     reasoning_content: str | None  # 推理内容
-    tool_calls: list[ToolCall] | None  # 工具调用 [(工具名称, 工具参数), ...]
-    embedding: list[float] | None  # 嵌入向量
+    tool_calls: List[ToolCall] | None  # 工具调用 [(工具名称, 工具参数), ...]
+    embedding: List[float] | None  # 嵌入向量
     usage: (
-        tuple[int, int, int] | None
+        Tuple[int, int, int] | None
     )  # 使用情况 (prompt_tokens, completion_tokens, total_tokens)
-    raw_data: any  # 原始数据
+    raw_data: Any  # 原始数据
 
     def __init__(self):
         self.content = None
@@ -45,11 +46,11 @@ class BaseClient:
     async def get_response(
         self,
         model_info: ModelInfo,
-        message_list: list[Message],
-        tool_options: list[ToolOption] | None = None,
+        message_list: List[Message],
+        tool_options: List[ToolOption] | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.7,
-        response_format: dict | None = None,
+        response_format: RespFormat | None = None,
         stream_response_handler: Callable[
             [AsyncStream[ChatCompletionChunk], asyncio.Event | None], APIResponse
         ]

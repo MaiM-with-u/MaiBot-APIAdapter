@@ -43,13 +43,27 @@ class TestConfigLoad:
         name = "provider1"
         base_url = "https://api.example.com"
         api_key = "key123"
+        
+        [[api_providers]]
+        name = "provider2"
+        base_url = "https://api.example2.com"
+        api_key = "key456"
     
         [[models]]
         model_identifier = "model1"
         api_provider = "provider1"
+        
+        [[models]]
+        model_identifier = "model2"
+        api_provider = "provider2"
     
         [task_model_usage]
         task1 = { model = "model1" }
+        task2 = "model1"
+        task3 = [
+            "model1",
+            { model = "model2", temperature = 0.5 }
+        ]
         """)
         config = load_config(str(config_path))
         assert config.req_conf.max_retry == 5

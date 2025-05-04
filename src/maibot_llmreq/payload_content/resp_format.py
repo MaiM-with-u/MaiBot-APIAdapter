@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, Optional, Any, List
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict, Required
@@ -42,7 +42,27 @@ class JsonSchema(TypedDict, total=False):
     """
 
 
-def _remove_title(schema: dict[str, any]) -> dict[str, any]:
+def _json_schema_type_check(instance) -> str | None:
+    if "name" not in instance:
+        return "schema必须包含'name'字段"
+    elif not isinstance(instance["name"], str) or instance["name"].strip() == "":
+        return "schema的'name'字段必须是非空字符串"
+    if "description" in instance and (
+        not isinstance(instance["description"], str)
+        or instance["description"].strip() == ""
+    ):
+        return "schema的'description'字段只能填入非空字符串"
+    if "schema" not in instance:
+        return "schema必须包含'schema'字段"
+    elif not isinstance(instance["schema"], Dict):
+        return "schema的'schema'字段必须是字典，详见https://json-schema.org/"
+    if "strict" in instance and not isinstance(instance["strict"], bool):
+        return "schema的'strict'字段只能填入布尔值"
+
+    return None
+
+
+def _remove_title(schema: Dict[str, Any]) -> Dict[str, Any]:
     """
     递归移除JSON Schema中的title字段
     """
@@ -58,14 +78,14 @@ def _remove_title(schema: dict[str, any]) -> dict[str, any]:
     return schema
 
 
-def _link_definitions(schema: dict[str, any]) -> dict[str, any]:
+def _link_definitions(schema: Dict[str, Any]) -> Dict[str, Any]:
     """
     链接JSON Schema中的definitions字段
     """
 
     def link_definitions_recursive(
-        path: str, sub_schema: list | dict[str, any], defs: dict[str, any]
-    ) -> dict[str, any]:
+        path: str, sub_schema: List | Dict[str, Any], defs: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         递归链接JSON Schema中的definitions字段
         :param path: 当前路径
@@ -99,7 +119,7 @@ def _link_definitions(schema: dict[str, any]) -> dict[str, any]:
                     raise ValueError(f"Schema中引用的定义'{def_key}'不存在")
             # 遍历键值对
             for key, value in sub_schema.items():
-                if isinstance(value, dict) or isinstance(value, list):
+                if isinstance(value, Dict) or isinstance(value, List):
                     # 如果当前值是字典或列表，则递归调用
                     sub_schema[key] = link_definitions_recursive(
                         path + "/" + key, value, defs
@@ -110,7 +130,7 @@ def _link_definitions(schema: dict[str, any]) -> dict[str, any]:
     return link_definitions_recursive("#", schema, {})
 
 
-def _remove_defs(sub_schema: dict[str, any]) -> dict[str, any]:
+def _remove_defs(sub_schema: Dict[str, Any]) -> Dict[str, Any]:
     """
     递归移除JSON Schema中的$defs字段
     :param sub_schema: 子Schema
@@ -119,11 +139,11 @@ def _remove_defs(sub_schema: dict[str, any]) -> dict[str, any]:
     if "$defs" in sub_schema:
         del sub_schema["$defs"]
     for key, value in sub_schema.items():
-        if isinstance(value, dict):
+        if isinstance(value, Dict):
             _remove_defs(value)
-        elif isinstance(value, list):
+        elif isinstance(value, List):
             for item in value:
-                if isinstance(item, dict):
+                if isinstance(item, Dict):
                     _remove_defs(item)
     return sub_schema
 
@@ -135,73 +155,44 @@ class RespFormat:
 
     format_type: RespFormatType  # 响应格式类型
     schema: JsonSchema | None  # JSON Schema
-    proto_type: type
+
+    @staticmethod
+    def _generate_schema_from_model(schema):
+        json_schema = {
+            "name": schema.__name__,
+            "schema": _remove_defs(
+                _link_definitions(_remove_title(schema.model_json_schema()))
+            ),
+            "strict": False,
+        }
+        if schema.__doc__:
+            json_schema["description"] = schema.__doc__
+        return json_schema
 
     def __init__(
         self,
         format_type: RespFormatType = RespFormatType.TEXT,
-        schema: dict[str, dict] | None = None,
-    ):
-        """
-        初始化响应格式
-        :param format_type: 响应格式类型
-        :param schema: JSON Schema
-        """
-        self.format_type = format_type
-        self.schema = schema
-
-    def set_format(
-        self,
-        format_type: RespFormatType,
         schema: type | JsonSchema | None = None,
     ):
         """
-        设置响应格式
-        :param format_type: 响应格式类型
+        响应格式
+        :param format_type: 响应格式类型（默认为文本）
         :param schema: 模板类或JsonSchema（仅当format_type为JSON Schema时有效）
         """
         self.format_type = format_type
 
         if format_type == RespFormatType.JSON_SCHEMA:
             if schema is not None:
-                if isinstance(schema, dict):
+                if isinstance(schema, Dict):
                     # 如果schema是字典，检查是否符合JsonSchema格式
-                    if "name" not in schema:
-                        raise ValueError("schema必须包含'name'字段")
-                    elif (
-                        not isinstance(schema["name"], str)
-                        or schema["name"].strip() == ""
-                    ):
-                        raise ValueError("schema的'name'字段必须是非空字符串")
-                    if "description" in schema and (
-                        not isinstance(schema["description"], str)
-                        or schema["description"].strip() == ""
-                    ):
-                        raise ValueError("schema的'description'字段只能填入非空字符串")
-                    if "schema" not in schema:
-                        raise ValueError("schema必须包含'schema'字段")
-                    elif not isinstance(schema["schema"], dict):
-                        raise ValueError(
-                            "schema的'schema'字段必须是字典，详见https://json-schema.org/"
-                        )
-                    if "strict" in schema and not isinstance(schema["strict"], bool):
-                        raise ValueError("schema的'strict'字段只能填入布尔值")
+                    check_msg = _json_schema_type_check(schema)
+                    if check_msg:
+                        raise ValueError(f"schema格式不正确，{check_msg}")
 
                     self.schema = schema
                 elif issubclass(schema, BaseModel):
                     try:
-                        json_schema = {
-                            "name": schema.__name__,
-                            "description": schema.__doc__,
-                            "schema": _remove_defs(
-                                _link_definitions(
-                                    _remove_title(schema.model_json_schema())
-                                )
-                            ),
-                            "strict": False,
-                        }
-                        if schema.__doc__:
-                            json_schema["description"] = schema.__doc__
+                        json_schema = self._generate_schema_from_model(schema)
 
                         self.schema = json_schema
                     except Exception:

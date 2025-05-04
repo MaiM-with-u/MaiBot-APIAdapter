@@ -1,19 +1,18 @@
 import asyncio
-from typing import Callable
+from typing import Callable, Any, Tuple, List, Dict
 
 from openai import AsyncStream
 from openai.types.chat import ChatCompletionChunk, ChatCompletion
 
 from .base_client import BaseClient, APIResponse
 from .. import _logger as logger
-from ..config.config import ModelInfo, ModelUsageConfigItem, RequestConfig
+from ..config.config import ModelInfo, ModelUsageConfigItem, RequestConfig, ModuleConfig
 from ..exceptions import (
     NetworkConnectionError,
     ReqAbortException,
     RespNotOkException,
     RespParseException,
 )
-from ..model_manager import ModelManager
 from ..payload_content.message import Message
 from ..payload_content.resp_format import RespFormat
 from ..payload_content.tool_option import ToolOption
@@ -26,9 +25,9 @@ def _check_retry(
     retry_interval: int,
     can_retry_msg: str,
     cannot_retry_msg: str,
-    can_retry_callable: callable = None,
+    can_retry_callable: Callable | None = None,
     **kwargs,
-) -> tuple[int, None]:
+) -> Tuple[int, Any | None]:
     """
     辅助函数：检查是否可以重试
     :param remain_try: 剩余尝试次数
@@ -40,7 +39,7 @@ def _check_retry(
     if remain_try > 0:
         # 还有重试机会
         logger.warning(f"{can_retry_msg}")
-        if can_retry_callable:
+        if can_retry_callable is not None:
             return retry_interval, can_retry_callable(**kwargs)
         else:
             return retry_interval, None
@@ -56,7 +55,7 @@ def _handle_resp_not_ok(
     model_name: str,
     remain_try: int,
     retry_interval: int = 10,
-    messages: tuple[list[Message], bool] | None = None,
+    messages: Tuple[List[Message], bool] | None = None,
 ):
     """
     处理响应错误异常
@@ -144,8 +143,8 @@ def default_exception_handler(
     model_name: str,
     remain_try: int,
     retry_interval: int = 10,
-    messages: tuple[list[Message], bool] | None = None,
-) -> tuple[int, list[Message] | None]:
+    messages: Tuple[List[Message], bool] | None = None,
+) -> Tuple[int, List[Message] | None]:
     """
     默认异常处理函数
     :param e: 异常对象
@@ -205,32 +204,34 @@ class ModelRequestHandler:
     """
 
     task_name: str  # 任务名称
-    client_map: dict[str, BaseClient]  # 客户端列表
-    configs: list[(ModelInfo, ModelUsageConfigItem)]  # 模型使用配置
+    client_map: Dict[str, BaseClient]  # 客户端列表
+    configs: List[Tuple[ModelInfo, ModelUsageConfigItem]]  # 模型使用配置
     usage_statistic: ModelUsageStatistic  # 任务的使用统计信息
     req_conf: RequestConfig  # 请求配置
 
     def __init__(
         self,
         task_name: str,
-        manager: ModelManager,
+        usage_statistic: ModelUsageStatistic,
+        config: ModuleConfig,
+        api_client_map: Dict[str, BaseClient],
     ):
         self.task_name = task_name
         self.client_map = {}
         self.configs = []
-        self.usage_statistic = manager.usage_statistic
-        self.req_conf = manager.config.req_conf
+        self.usage_statistic = usage_statistic
+        self.req_conf = config.req_conf
 
         # 获取模型与使用配置
-        for model_usage in manager.config.task_model_usage_map[task_name].usage:
-            if model_usage.name not in manager.config.models:
+        for model_usage in config.task_model_usage_map[task_name].usage:
+            if model_usage.name not in config.models:
                 logger.error(f"Model '{model_usage.name}' not found in ModelManager")
                 raise KeyError(f"Model '{model_usage.name}' not found in ModelManager")
-            model_info = manager.config.models[model_usage.name]
+            model_info = config.models[model_usage.name]
 
             if model_info.api_provider not in self.client_map:
                 # 缓存API客户端
-                self.client_map[model_info.api_provider] = manager.api_client_map[
+                self.client_map[model_info.api_provider] = api_client_map[
                     model_info.api_provider
                 ]
 
@@ -238,8 +239,8 @@ class ModelRequestHandler:
 
     async def get_response(
         self,
-        messages: list[Message],
-        tool_options: list[ToolOption] = None,
+        messages: List[Message],
+        tool_options: List[ToolOption] | None = None,
         response_format: RespFormat | None = None,  # 暂不启用
         stream_response_handler: Callable[
             [AsyncStream[ChatCompletionChunk], asyncio.Event | None], APIResponse
@@ -260,7 +261,7 @@ class ModelRequestHandler:
         """
         # 遍历可用模型，若获取响应失败，则使用下一个模型继续请求
         for config_item in self.configs:
-            client = self.client_map[config_item.api_provider]
+            client = self.client_map[config_item[0].api_provider]
             model_info: ModelInfo = config_item[0]
             model_usage_config: ModelUsageConfigItem = config_item[1]
 
