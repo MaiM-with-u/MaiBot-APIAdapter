@@ -1,4 +1,8 @@
 import asyncio
+from typing import Callable
+
+from openai import AsyncStream
+from openai.types.chat import ChatCompletionChunk, ChatCompletion
 
 from .base_client import BaseClient, APIResponse
 from .. import _logger as logger
@@ -11,6 +15,7 @@ from ..exceptions import (
 )
 from ..model_manager import ModelManager
 from ..payload_content.message import Message
+from ..payload_content.resp_format import RespFormat
 from ..payload_content.tool_option import ToolOption
 from ..usage_statistic import ModelUsageStatistic, UsageCallStatus
 from ..utils import compress_messages
@@ -166,9 +171,9 @@ def default_exception_handler(
             ),
         )
     elif isinstance(e, ReqAbortException):
-        # 请求被中断
-        # TODO: 流式输出模式适配
-        logger.warning(f"任务-'{task_name}' 模型-'{model_name}'\n请求被中断")
+        logger.warning(
+            f"任务-'{task_name}' 模型-'{model_name}'\n请求被中断，详细信息-{str(e.message)}"
+        )
         return -1, None  # 不再重试请求该模型
     elif isinstance(e, RespNotOkException):
         return _handle_resp_not_ok(
@@ -185,7 +190,7 @@ def default_exception_handler(
             f"任务-'{task_name}' 模型-'{model_name}'\n"
             f"响应解析错误，错误信息-{e.message}\n"
         )
-        logger.debug(f"响应内容:\n{str(e.resp)}")
+        logger.debug(f"附加内容:\n{str(e.ext_info)}")
         return -1, None  # 不再重试请求该模型
     else:
         logger.error(
@@ -235,17 +240,22 @@ class ModelRequestHandler:
         self,
         messages: list[Message],
         tool_options: list[ToolOption] = None,
-        response_format: dict | None = None,  # 暂不启用
-        stream_response_handler: callable = None,
-        async_response_parser: callable = None,
+        response_format: RespFormat | None = None,  # 暂不启用
+        stream_response_handler: Callable[
+            [AsyncStream[ChatCompletionChunk], asyncio.Event | None], APIResponse
+        ]
+        | None = None,
+        async_response_parser: Callable[[ChatCompletion], APIResponse] | None = None,
+        interrupt_flag: asyncio.Event | None = None,
     ) -> APIResponse:
         """
         获取对话响应
         :param messages: 消息列表
         :param tool_options: 工具选项列表
         :param response_format: 响应格式
-        :param stream_response_handler: 流式响应处理函数
-        :param async_response_parser: 异步响应解析函数
+        :param stream_response_handler: 流式响应处理函数（可选）
+        :param async_response_parser: 响应解析函数（可选）
+        :param interrupt_flag: 中断信号量（可选，默认为None）
         :return: APIResponse
         """
         # 遍历可用模型，若获取响应失败，则使用下一个模型继续请求
@@ -284,6 +294,7 @@ class ModelRequestHandler:
                         response_format=response_format,
                         stream_response_handler=stream_response_handler,
                         async_response_parser=async_response_parser,
+                        interrupt_flag=interrupt_flag,
                     )
                     # 统计usage
                     if response.usage is not None:
