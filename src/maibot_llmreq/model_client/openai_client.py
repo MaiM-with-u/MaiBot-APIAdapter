@@ -12,6 +12,7 @@ from openai import (
     AsyncStream,
 )
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from openai.types.chat.chat_completion_chunk import ChoiceDelta
 
 from .base_client import APIResponse
 from ..config.config import ModelInfo, APIProvider
@@ -122,112 +123,82 @@ def _convert_tool_options(tool_options: list[ToolOption]) -> list[dict]:
     return [_convert_tool_option_item(tool_option) for tool_option in tool_options]
 
 
-pattern = re.compile(
-    r"<think>(?P<think>.*?)</think>(?P<content>.*)|<think>(?P<think_unclosed>.*)|(?P<content_only>.+)",
-    re.DOTALL,
-)
-"""用于解析推理内容的正则表达式"""
-
-
-def _default_stream_response_handler(
-    resp_stream: AsyncStream[ChatCompletionChunk],
-    interrupt_flag: asyncio.Event | None,
-) -> APIResponse:
-    """
-    流式响应处理函数 - 处理OpenAI API的流式响应
-    :param resp_stream: 流式响应对象
-    :return: APIResponse对象
-    """
-
-    resp = APIResponse()
-
-    _has_rc_attr_flag = False  # 标记是否有独立的推理内容块
-    _in_rc_flag = False  # 标记是否在推理内容块中
-    _rc_delta_buffer = io.StringIO()  # 推理内容缓冲区，用于存储接收到的推理内容
-    _fc_delta_buffer = io.StringIO()  # 正式内容缓冲区，用于存储接收到的正式内容
-    _tool_calls_buffer = []  # 工具调用缓冲区，用于存储接收到的工具调用
-    _usage_record = None  # 使用情况记录
-
-    async for event in resp_stream:
-        # 检查是否有中断量
-        if interrupt_flag and interrupt_flag.is_set():
-            # 如果中断量被设置，则抛出ReqAbortException
-            raise ReqAbortException("请求被外部信号中断")
-
-        delta = event.choices[0].delta  # 获取当前块的delta内容
-
-        # 接收content
+def _process_delta(
+    delta: ChoiceDelta,
+    has_rc_attr_flag: bool,
+    in_rc_flag: bool,
+    rc_delta_buffer: io.StringIO,
+    fc_delta_buffer: io.StringIO,
+    tool_calls_buffer: list[tuple[str, str, io.StringIO]],
+) -> bool:
+    # 接收content
+    if has_rc_attr_flag:
+        # 有独立的推理内容块，则无需考虑content内容的判读
         if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-            # 有独立的推理内容块
-            _has_rc_attr_flag = True
-
-        if _has_rc_attr_flag:
-            # 有独立的推理内容块，则无需考虑content内容的判读
-            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                # 如果有推理内容，则将其写入推理内容缓冲区
-                assert isinstance(delta.reasoning_content, str)
-                _rc_delta_buffer.write(delta.reasoning_content)
-            elif delta.content:
-                # 如果有正式内容，则将其写入正式内容缓冲区
-                _fc_delta_buffer.write(delta.content)
-        elif hasattr(delta, "content") and delta.content is not None:
-            # 没有独立的推理内容块，但有正式内容
-            if not _in_rc_flag:
-                # 当前不在推理内容块中
-                if delta.content == "<think>" and not _fc_delta_buffer.getvalue():
-                    # 如果当前内容是<think>，且正式内容缓冲区为空，说明<think>为输出的首个token
-                    # 则将其视为推理内容的开始标记，进入推理内容块
-                    _in_rc_flag = True
-                else:
-                    # 其他情况视为正式内容，加入正式内容缓冲区
-                    _fc_delta_buffer.write(delta.content)
+            # 如果有推理内容，则将其写入推理内容缓冲区
+            assert isinstance(delta.reasoning_content, str)
+            rc_delta_buffer.write(delta.reasoning_content)
+        elif delta.content:
+            # 如果有正式内容，则将其写入正式内容缓冲区
+            fc_delta_buffer.write(delta.content)
+    elif hasattr(delta, "content") and delta.content is not None:
+        # 没有独立的推理内容块，但有正式内容
+        if not in_rc_flag:
+            # 当前不在推理内容块中
+            if delta.content == "<think>" and not fc_delta_buffer.getvalue():
+                # 如果当前内容是<think>，且正式内容缓冲区为空，说明<think>为输出的首个token
+                # 则将其视为推理内容的开始标记，进入推理内容块
+                in_rc_flag = True
             else:
-                # 当前在推理内容块中
-                if delta.content == "</think>":
-                    # 如果当前内容是</think>，则将其视为推理内容的结束标记，退出推理内容块
-                    _in_rc_flag = False
-                else:
-                    # 其他情况视为推理内容，加入推理内容缓冲区
-                    _rc_delta_buffer.write(delta.content)
+                # 其他情况视为正式内容，加入正式内容缓冲区
+                fc_delta_buffer.write(delta.content)
+        else:
+            # 当前在推理内容块中
+            if delta.content == "</think>":
+                # 如果当前内容是</think>，则将其视为推理内容的结束标记，退出推理内容块
+                in_rc_flag = False
+            else:
+                # 其他情况视为推理内容，加入推理内容缓冲区
+                rc_delta_buffer.write(delta.content)
+    # 接收tool_calls
+    if hasattr(delta, "tool_calls") and delta.tool_calls:
+        tool_call_delta = delta.tool_calls[0]
 
-        # 接收tool_calls
-        if hasattr(delta, "tool_calls") and delta.tool_calls:
-            tool_call_delta = delta.tool_calls[0]
-
-            if tool_call_delta.index >= len(_tool_calls_buffer):
-                # 调用索引号大于等于缓冲区长度，说明是新的工具调用
-                _tool_calls_buffer.append(
-                    (
-                        tool_call_delta.id,
-                        tool_call_delta.function.name,
-                        io.StringIO(),
-                    )
+        if tool_call_delta.index >= len(tool_calls_buffer):
+            # 调用索引号大于等于缓冲区长度，说明是新的工具调用
+            tool_calls_buffer.append(
+                (
+                    tool_call_delta.id,
+                    tool_call_delta.function.name,
+                    io.StringIO(),
                 )
-
-            if tool_call_delta.function.arguments:
-                # 如果有工具调用参数，则添加到对应的工具调用的参数串缓冲区中
-                _tool_calls_buffer[tool_call_delta.index][2].write(
-                    tool_call_delta.function.arguments
-                )
-
-        if event.usage is not None:
-            # 如果有使用情况，则将其存储在APIResponse对象中
-            _usage_record = (
-                event.usage.prompt_tokens,
-                event.usage.completion_tokens,
-                event.usage.total_tokens,
             )
+
+        if tool_call_delta.function.arguments:
+            # 如果有工具调用参数，则添加到对应的工具调用的参数串缓冲区中
+            tool_calls_buffer[tool_call_delta.index][2].write(
+                tool_call_delta.function.arguments
+            )
+
+    return in_rc_flag
+
+
+def _build_stream_api_resp(
+    _fc_delta_buffer: io.StringIO,
+    _rc_delta_buffer: io.StringIO,
+    _tool_calls_buffer: list[tuple[str, str, io.StringIO]],
+    _usage_record: tuple[int, int, int] | None,
+) -> APIResponse:
+    resp = APIResponse()
 
     if _rc_delta_buffer.tell() > 0:
         # 如果推理内容缓冲区不为空，则将其写入APIResponse对象
         resp.reasoning_content = _rc_delta_buffer.getvalue()
     _rc_delta_buffer.close()
-
     if _fc_delta_buffer.tell() > 0:
         # 如果正式内容缓冲区不为空，则将其写入APIResponse对象
         resp.content = _fc_delta_buffer.getvalue()
     _fc_delta_buffer.close()
-
     if len(_tool_calls_buffer) > 0:
         # 如果工具调用缓冲区不为空，则将其解析为ToolCall对象列表
         resp.tool_calls = []
@@ -255,12 +226,80 @@ def _default_stream_response_handler(
                 arguments = None
 
             resp.tool_calls.append(ToolCall(call_id, function_name, arguments))
-
     if _usage_record is not None:
         # 如果使用情况记录不为空，则将其存储在APIResponse对象中
         resp.usage = _usage_record
 
     return resp
+
+
+pattern = re.compile(
+    r"<think>(?P<think>.*?)</think>(?P<content>.*)|<think>(?P<think_unclosed>.*)|(?P<content_only>.+)",
+    re.DOTALL,
+)
+"""用于解析推理内容的正则表达式"""
+
+
+def _default_stream_response_handler(
+    resp_stream: AsyncStream[ChatCompletionChunk],
+    interrupt_flag: asyncio.Event | None,
+) -> APIResponse:
+    """
+    流式响应处理函数 - 处理OpenAI API的流式响应
+    :param resp_stream: 流式响应对象
+    :return: APIResponse对象
+    """
+    _has_rc_attr_flag = False  # 标记是否有独立的推理内容块
+    _in_rc_flag = False  # 标记是否在推理内容块中
+    _rc_delta_buffer = io.StringIO()  # 推理内容缓冲区，用于存储接收到的推理内容
+    _fc_delta_buffer = io.StringIO()  # 正式内容缓冲区，用于存储接收到的正式内容
+    _tool_calls_buffer = []  # 工具调用缓冲区，用于存储接收到的工具调用
+    _usage_record = None  # 使用情况记录
+
+    try:
+        async for event in resp_stream:
+            # 检查是否有中断量
+            if interrupt_flag and interrupt_flag.is_set():
+                # 如果中断量被设置，则抛出ReqAbortException
+                raise ReqAbortException("请求被外部信号中断")
+
+            delta = event.choices[0].delta  # 获取当前块的delta内容
+
+            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                # 标记：有独立的推理内容块
+                _has_rc_attr_flag = True
+
+            _in_rc_flag = _process_delta(
+                delta,
+                _has_rc_attr_flag,
+                _in_rc_flag,
+                _rc_delta_buffer,
+                _fc_delta_buffer,
+                _tool_calls_buffer,
+            )
+
+            if event.usage is not None:
+                # 如果有使用情况，则将其存储在APIResponse对象中
+                _usage_record = (
+                    event.usage.prompt_tokens,
+                    event.usage.completion_tokens,
+                    event.usage.total_tokens,
+                )
+
+        return _build_stream_api_resp(
+            _fc_delta_buffer,
+            _rc_delta_buffer,
+            _tool_calls_buffer,
+            _usage_record,
+        )
+    finally:
+        # 确保缓冲区被关闭
+        if _rc_delta_buffer:
+            _rc_delta_buffer.close()
+        if _fc_delta_buffer:
+            _fc_delta_buffer.close()
+        for _, _, buffer in _tool_calls_buffer:
+            buffer.close()
 
 
 def _default_async_response_parser(resp: ChatCompletion) -> APIResponse:
@@ -343,9 +382,10 @@ class OpenaiClient(BaseClient):
         response_format: dict | None = None,
         stream_response_handler: Callable[
             [AsyncStream[ChatCompletionChunk], asyncio.Event | None], APIResponse
-        ] = None,
-        async_response_parser: Callable[[ChatCompletion], APIResponse] = None,
-        interrupt_flag: asyncio.Event = None,
+        ]
+        | None = None,
+        async_response_parser: Callable[[ChatCompletion], APIResponse] | None = None,
+        interrupt_flag: asyncio.Event | None = None,
     ) -> APIResponse:
         """
         获取对话响应
@@ -386,20 +426,19 @@ class OpenaiClient(BaseClient):
                         else NOT_GIVEN,
                     )
                 )
-                while True:
-                    if req_task.done():
-                        # 若请求完成，则获取结果并返回
-                        resp_stream = req_task.result()
-                        break
+                while not req_task.done():
                     if interrupt_flag and interrupt_flag.is_set():
                         # 如果中断量存在且被设置，则取消任务并抛出异常
                         req_task.cancel()
                         raise ReqAbortException("请求被外部信号中断")
                     await asyncio.sleep(0.1)  # 等待0.1秒后再次检查任务&中断信号量状态
 
-                return stream_response_handler(resp_stream, interrupt_flag)
-            except Exception:
-                raise  # TODO: 完善流式输出模式的异常处理
+                return stream_response_handler(req_task.result(), interrupt_flag)
+            except APIConnectionError:
+                raise NetworkConnectionError()
+            except APIStatusError as e:
+                # 重封装APIError为RespNotOkException
+                raise RespNotOkException(e.status_code, e.message)
         else:
             try:
                 # 发送请求并获取响应
@@ -416,18 +455,14 @@ class OpenaiClient(BaseClient):
                         else NOT_GIVEN,
                     )
                 )
-                while True:
-                    if req_task.done():
-                        # 若请求完成，则获取结果并返回
-                        resp_stream = req_task.result()
-                        break
+                while not req_task.done():
                     if interrupt_flag and interrupt_flag.is_set():
                         # 如果中断量存在且被设置，则取消任务并抛出异常
                         req_task.cancel()
                         raise ReqAbortException("请求被外部信号中断")
                     await asyncio.sleep(0.5)  # 等待0.5秒后再次检查任务&中断信号量状态
 
-                return async_response_parser(resp_stream)
+                return async_response_parser(req_task.result())
             except APIConnectionError:
                 raise NetworkConnectionError()
             except APIStatusError as e:

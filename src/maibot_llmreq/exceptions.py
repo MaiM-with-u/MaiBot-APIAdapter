@@ -56,9 +56,9 @@ class RespNotOkException(Exception):
 class RespParseException(Exception):
     """响应解析错误，常见于响应格式不正确或解析方法不匹配"""
 
-    def __init__(self, resp: Any, message: str | None = None):
+    def __init__(self, ext_info: Any, message: str | None = None):
         super().__init__(message)
-        self.resp = resp
+        self.ext_info = ext_info
         self.message = message
 
     def __str__(self):

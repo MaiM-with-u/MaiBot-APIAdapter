@@ -20,7 +20,7 @@ class JsonSchema(TypedDict, total=False):
     of 64.
     """
 
-    description: str
+    description: Optional[str]
     """
     A description of what the response format is for, used by the model to determine
     how to respond in the format.
@@ -42,7 +42,7 @@ class JsonSchema(TypedDict, total=False):
     """
 
 
-def remove_title(schema: dict[str, any]) -> dict[str, any]:
+def _remove_title(schema: dict[str, any]) -> dict[str, any]:
     """
     递归移除JSON Schema中的title字段
     """
@@ -50,15 +50,15 @@ def remove_title(schema: dict[str, any]) -> dict[str, any]:
         del schema["title"]
     for key, value in schema.items():
         if isinstance(value, dict):
-            remove_title(value)
+            _remove_title(value)
         elif isinstance(value, list):
             for item in value:
                 if isinstance(item, dict):
-                    remove_title(item)
+                    _remove_title(item)
     return schema
 
 
-def link_definitions(schema: dict[str, any]) -> dict[str, any]:
+def _link_definitions(schema: dict[str, any]) -> dict[str, any]:
     """
     链接JSON Schema中的definitions字段
     """
@@ -110,7 +110,7 @@ def link_definitions(schema: dict[str, any]) -> dict[str, any]:
     return link_definitions_recursive("#", schema, {})
 
 
-def remove_defs(sub_schema: dict[str, any]) -> dict[str, any]:
+def _remove_defs(sub_schema: dict[str, any]) -> dict[str, any]:
     """
     递归移除JSON Schema中的$defs字段
     :param sub_schema: 子Schema
@@ -120,11 +120,11 @@ def remove_defs(sub_schema: dict[str, any]) -> dict[str, any]:
         del sub_schema["$defs"]
     for key, value in sub_schema.items():
         if isinstance(value, dict):
-            remove_defs(value)
+            _remove_defs(value)
         elif isinstance(value, list):
             for item in value:
                 if isinstance(item, dict):
-                    remove_defs(item)
+                    _remove_defs(item)
     return sub_schema
 
 
@@ -164,15 +164,38 @@ class RespFormat:
 
         if format_type == RespFormatType.JSON_SCHEMA:
             if schema is not None:
-                if isinstance(schema, JsonSchema):
+                if isinstance(schema, dict):
+                    # 如果schema是字典，检查是否符合JsonSchema格式
+                    if "name" not in schema:
+                        raise ValueError("schema必须包含'name'字段")
+                    elif (
+                        not isinstance(schema["name"], str)
+                        or schema["name"].strip() == ""
+                    ):
+                        raise ValueError("schema的'name'字段必须是非空字符串")
+                    if "description" in schema and (
+                        not isinstance(schema["description"], str)
+                        or schema["description"].strip() == ""
+                    ):
+                        raise ValueError("schema的'description'字段只能填入非空字符串")
+                    if "schema" not in schema:
+                        raise ValueError("schema必须包含'schema'字段")
+                    elif not isinstance(schema["schema"], dict):
+                        raise ValueError(
+                            "schema的'schema'字段必须是字典，详见https://json-schema.org/"
+                        )
+                    if "strict" in schema and not isinstance(schema["strict"], bool):
+                        raise ValueError("schema的'strict'字段只能填入布尔值")
+
                     self.schema = schema
                 elif issubclass(schema, BaseModel):
                     try:
                         json_schema = {
                             "name": schema.__name__,
-                            "schema": remove_defs(
-                                link_definitions(
-                                    remove_title(schema.model_json_schema())
+                            "description": schema.__doc__,
+                            "schema": _remove_defs(
+                                _link_definitions(
+                                    _remove_title(schema.model_json_schema())
                                 )
                             ),
                             "strict": False,
