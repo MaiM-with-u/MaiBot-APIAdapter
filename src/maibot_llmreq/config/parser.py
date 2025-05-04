@@ -3,7 +3,7 @@ import os
 import tomli
 from packaging import version
 from packaging.specifiers import SpecifierSet
-from packaging.version import InvalidVersion, Version
+from packaging.version import Version, InvalidVersion
 
 from .. import _logger as logger
 
@@ -234,7 +234,9 @@ def load_config(config_path: str) -> ModuleConfig:
         # 如果在配置中找到了需要的项，调用对应项的闭包函数处理
         for key in include_configs:
             if key in toml_dict:
-                group_specifier_set: SpecifierSet = include_configs[key]["support"]
+                group_specifier_set: SpecifierSet = SpecifierSet(
+                    include_configs[key]["support"]
+                )
 
                 # 检查配置文件版本是否在支持范围内
                 if config.INNER_VERSION in group_specifier_set:
