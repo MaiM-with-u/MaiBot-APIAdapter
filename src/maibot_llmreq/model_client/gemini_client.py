@@ -76,7 +76,7 @@ def _convert_messages(messages: list[Message]) -> tuple[list[dict], str | None]:
         return ret
 
     # 然后我需要在这里确保最多最多只有一个system，如果多了我就合并，tmd
-    ret1: list[dict] = []
+    temp_list: list[dict] = []
     system_instructions: str = ""
     for message in messages:
         if message.role == RoleType.System:
@@ -89,15 +89,15 @@ def _convert_messages(messages: list[Message]) -> tuple[list[dict], str | None]:
                 raise ValueError("无法触及的代码：请使用MessageBuilder类构建消息对象")
             pass
         else:
-            ret1.append(_convert_message_item(message))
+            temp_list.append(_convert_message_item(message))
     if system_instructions != "":
         # 如果有system消息，就把它加上去
-        ret2: tuple = (ret1, system_instructions)
+        ret: tuple = (temp_list, system_instructions)
     else:
         # 如果没有system消息，就直接返回
-        ret2: tuple = (ret1, None)
+        ret: tuple = (temp_list, None)
 
-    return ret2
+    return ret
 
 
 def _convert_tool_options(tool_options: list[ToolOption]) -> list[FunctionDeclaration]:
@@ -145,6 +145,27 @@ def _convert_tool_options(tool_options: list[ToolOption]) -> list[FunctionDeclar
     return [_convert_tool_option_item(tool_option) for tool_option in tool_options]
 
 
+def _get_finish_reason(candidate: types.Candidate):
+    finish_reason_enum = candidate.finish_reason
+    finish_reason_str = finish_reason_enum.name
+    if finish_reason_enum not in [
+        types.FinishReason.STOP,
+        types.FinishReason.MAX_TOKENS,
+        None,
+    ]:
+        logger.info(f"Gemini生成停止，原因：{finish_reason_str}")
+        if finish_reason_enum == types.FinishReason.SAFETY:
+            safety_ratings_str = "，".join(
+                [
+                    f"{rating.category.name}: {rating.probability.name}"
+                    for rating in candidate.safety_ratings
+                ]
+            )
+            logger.error(
+                f"Gemini安全设置重新思考了回答，安全评分: {safety_ratings_str}"
+            )
+
+
 def _process_delta(
     delta: GenerateContentResponse,
     fc_delta_buffer: io.StringIO,
@@ -155,24 +176,7 @@ def _process_delta(
         if delta.candidates:
             candidate = delta.candidates[-1]
             # 鉴定一下怎么结束的,gemini特色了属于是
-            finish_reason_enum = candidate.finish_reason
-            finish_reason_str = finish_reason_enum.name
-            if finish_reason_enum not in [
-                types.FinishReason.STOP,
-                types.FinishReason.MAX_TOKENS,
-                None,
-            ]:
-                logger.info(f"Gemini生成停止，原因：{finish_reason_str}")
-                if finish_reason_enum == types.FinishReason.SAFETY:
-                    safety_ratings_str = "，".join(
-                        [
-                            f"{rating.category.name}: {rating.probability.name}"
-                            for rating in candidate.safety_ratings
-                        ]
-                    )
-                    logger.error(
-                        f"Gemini安全设置重新思考了回答，安全评分: {safety_ratings_str}"
-                    )
+            _get_finish_reason(candidate)
 
             if delta.text:
                 fc_delta_buffer.write(delta.text)
@@ -259,7 +263,7 @@ def _build_stream_api_resp(
         # 如果工具调用缓冲区不为空，则将其解析为ToolCall对象列表
         resp.tool_calls = []
         for call_id, function_name, arguments_buffer in _tool_calls_buffer:
-            if arguments_buffer.tell() > 0:
+            if arguments_buffer is not None:
                 arguments = arguments_buffer
                 if not isinstance(arguments, dict):
                     raise RespParseException(
@@ -348,23 +352,7 @@ def _default_async_response_parser(resp: GenerateContentResponse) -> APIResponse
             candidate = resp.candidates[-1]
 
             # 鉴定一下怎么结束的,gemini特色了属于是
-            finish_reason_enum = candidate.finish_reason
-            finish_reason_str = finish_reason_enum.name
-            if finish_reason_enum not in [
-                types.FinishReason.STOP,
-                types.FinishReason.MAX_TOKENS,
-            ]:
-                logger.info(f"Gemini生成停止，原因：{finish_reason_str}")
-                if finish_reason_enum == types.FinishReason.SAFETY:
-                    safety_ratings_str = "，".join(
-                        [
-                            f"{rating.category.name}: {rating.probability.name}"
-                            for rating in candidate.safety_ratings
-                        ]
-                    )
-                    logger.error(
-                        f"Gemini安全设置重新思考了回答，安全评分: {safety_ratings_str}"
-                    )
+            _get_finish_reason(candidate)
 
             # 解析回复文字（如有）
             try:
@@ -495,7 +483,7 @@ class GeminiClient(BaseClient):
         :return: (响应文本, 推理文本, 工具调用, 其他数据)
         """
         if stream_response_handler is None:
-            stream_response_handler = await _default_stream_response_handler
+            stream_response_handler = _default_stream_response_handler
 
         if async_response_parser is None:
             async_response_parser = _default_async_response_parser
