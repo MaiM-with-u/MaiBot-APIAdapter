@@ -1,10 +1,12 @@
 import loguru
 
-_logger: loguru.Logger = loguru.logger
+type LoguruLogger = loguru.Logger
+
+_logger: LoguruLogger = loguru.logger
 
 
 def init_logger(
-    logger: loguru.Logger | None = None,
+    logger: LoguruLogger | None = None,
 ):
     """
     对LLMRequest模块进行配置

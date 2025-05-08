@@ -1,4 +1,5 @@
 import importlib
+from typing import Dict
 
 from pymongo.synchronous.database import Database
 
@@ -15,7 +16,7 @@ from .usage_statistic import ModelUsageStatistic
 class ModelManager:
     config: ModuleConfig
     usage_statistic: ModelUsageStatistic  # 任务的使用统计信息
-    api_client_map: dict[str, BaseClient]  # API客户端列表
+    api_client_map: Dict[str, BaseClient]  # API客户端列表
     # TODO: 添加读写锁，防止异步刷新配置时发生数据竞争
 
     def __init__(
@@ -59,7 +60,12 @@ class ModelManager:
         if task_name not in self.config.task_model_usage_map:
             raise KeyError(f"'{task_name}' not registered in ModelManager")
 
-        return ModelRequestHandler(task_name=task_name, manager=self)
+        return ModelRequestHandler(
+            task_name=task_name,
+            usage_statistic=self.usage_statistic,
+            config=self.config,
+            api_client_map=self.api_client_map,
+        )
 
     def __setitem__(self, task_name: str, value: ModelUsageConfig):
         """

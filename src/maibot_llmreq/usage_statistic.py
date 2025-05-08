@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import Tuple
 
 from pymongo.synchronous.database import Database
 
@@ -119,9 +120,9 @@ class ModelUsageStatistic:
 
     def update_usage(
         self,
-        record_id: str,
+        record_id: str | None,
         model_info: ModelInfo,
-        usage_data: tuple[int, int, int] | None = None,
+        usage_data: Tuple[int, int, int] | None = None,
         stat: UsageCallStatus = UsageCallStatus.SUCCESS,
         ext_msg: str | None = None,
     ):

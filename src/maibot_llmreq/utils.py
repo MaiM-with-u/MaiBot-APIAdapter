@@ -26,11 +26,15 @@ def compress_messages(
         try:
             image = Image.open(image_data)
 
-            if image.format.upper() in ["JPEG", "JPG", "PNG", "WEBP"]:
+            if image.format and (
+                image.format.upper() in ["JPEG", "JPG", "PNG", "WEBP"]
+            ):
                 # 静态图像，转换为JPEG格式
-                image_data = io.BytesIO()
-                image.save(image_data, format="JPEG", quality=95, optimize=True)
-                image_data = image_data.getvalue()
+                reformated_image_data = io.BytesIO()
+                image.save(
+                    reformated_image_data, format="JPEG", quality=95, optimize=True
+                )
+                image_data = reformated_image_data.getvalue()
 
             return image_data
         except Exception as e:

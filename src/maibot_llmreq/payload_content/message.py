@@ -1,4 +1,6 @@
 from enum import Enum
+from typing import Tuple, List
+
 
 # 设计这系列类的目的是为未来可能的扩展做准备
 
@@ -17,14 +19,14 @@ class Message:
     # 角色：system、user、assistant、tool
     role: RoleType
     # 内容：提示词、图片与提示词的列表
-    content: str | list[tuple[str, str] | str]
+    content: str | List[Tuple[str, str] | str]
     # 工具调用指令的id
     tool_call_id: str | None
 
     def __init__(
         self,
         role: RoleType,
-        content: str | list[tuple[str, str] | str],
+        content: str | List[Tuple[str, str] | str],
         tool_call_id: str | None = None,
     ):
         """
@@ -38,7 +40,7 @@ class Message:
 
 class MessageBuilder:
     __role: RoleType
-    __content: list[tuple[str, str] | str]
+    __content: List[Tuple[str, str] | str]
     __tool_call_id: str | None
 
     def __init__(self):
