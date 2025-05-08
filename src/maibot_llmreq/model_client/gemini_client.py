@@ -28,9 +28,6 @@ from ..exceptions import (
 from ..payload_content.message import Message, RoleType
 from ..payload_content.tool_option import ToolOption, ToolParam, ToolCall
 
-MODELS_NEED_TRANSFORMATION = ["2.5"]
-"""gemini2.5专用转换变量"""
-
 T = TypeVar("T")
 """类型转换用的"""
 
@@ -513,7 +510,7 @@ class GeminiClient(BaseClient):
             "temperature": temperature,
             "response_modalities": ["TEXT"],  # 暂时只支持文本输出
         }
-        if MODELS_NEED_TRANSFORMATION in model_info.model_identifier.lower():
+        if "2.5" in model_info.model_identifier.lower():
             # 我偷个懒，在这里识别一下2.5然后开摆，反正现在只有2.5支持思维链，然后我测试之后发现它不返回思考内容，反正我也怕他有朝一日返回了，我决定干掉任何有关的思维内容
             generation_config_dict["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=thinking_budget, include_thoughts=False
