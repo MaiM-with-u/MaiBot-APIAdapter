@@ -1,35 +1,61 @@
 import asyncio
-from typing import Callable
+from dataclasses import dataclass
+from typing import Callable, Any
 
 from openai import AsyncStream
 from openai.types.chat import ChatCompletionChunk, ChatCompletion
 
 from ..config.config import ModelInfo, APIProvider
 from ..payload_content.message import Message
+from ..payload_content.resp_format import RespFormat
 from ..payload_content.tool_option import ToolOption, ToolCall
 
 
+@dataclass
+class UsageRecord:
+    """
+    使用记录类
+    """
+
+    model_name: str
+    """模型名称"""
+
+    provider_name: str
+    """提供商名称"""
+
+    prompt_tokens: int
+    """提示token数"""
+
+    completion_tokens: int
+    """完成token数"""
+
+    total_tokens: int
+    """总token数"""
+
+
+@dataclass
 class APIResponse:
     """
     API响应类
     """
 
-    content: str | None  # 响应内容
-    reasoning_content: str | None  # 推理内容
-    tool_calls: list[ToolCall] | None  # 工具调用 [(工具名称, 工具参数), ...]
-    embedding: list[float] | None  # 嵌入向量
-    usage: (
-        tuple[int, int, int] | None
-    )  # 使用情况 (prompt_tokens, completion_tokens, total_tokens)
-    raw_data: any  # 原始数据
+    content: str | None = None
+    """响应内容"""
 
-    def __init__(self):
-        self.content = None
-        self.reasoning_content = None
-        self.tool_calls = None
-        self.embedding = None
-        self.usage = None
-        self.raw_data = None
+    reasoning_content: str | None = None
+    """推理内容"""
+
+    tool_calls: list[ToolCall] | None = None
+    """工具调用 [(工具名称, 工具参数), ...]"""
+
+    embedding: list[float] | None = None
+    """嵌入向量"""
+
+    usage: UsageRecord | None = None
+    """使用情况 (prompt_tokens, completion_tokens, total_tokens)"""
+
+    raw_data: Any = None
+    """响应原始数据"""
 
 
 class BaseClient:
@@ -49,12 +75,16 @@ class BaseClient:
         tool_options: list[ToolOption] | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.7,
-        response_format: dict | None = None,
+        response_format: RespFormat | None = None,
         stream_response_handler: Callable[
-            [AsyncStream[ChatCompletionChunk], asyncio.Event | None], APIResponse
+            [AsyncStream[ChatCompletionChunk], asyncio.Event | None],
+            tuple[APIResponse, tuple[int, int, int]],
         ]
         | None = None,
-        async_response_parser: Callable[[ChatCompletion], APIResponse] | None = None,
+        async_response_parser: Callable[
+            [ChatCompletion], tuple[APIResponse, tuple[int, int, int]]
+        ]
+        | None = None,
         interrupt_flag: asyncio.Event | None = None,
     ) -> APIResponse:
         """

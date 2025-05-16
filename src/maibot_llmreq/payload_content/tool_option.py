@@ -17,11 +17,6 @@ class ToolParam:
     工具调用参数
     """
 
-    name: str  # 参数名称
-    param_type: ToolParamType  # 参数类型
-    description: str  # 参数描述
-    required: bool  # 是否必填
-
     def __init__(
         self, name: str, param_type: ToolParamType, description: str, required: bool
     ):
@@ -33,20 +28,16 @@ class ToolParam:
         :param description: 参数描述
         :param required: 是否必填
         """
-        self.name = name
-        self.param_type = param_type
-        self.description = description
-        self.required = required
+        self.name: str = name
+        self.param_type: ToolParamType = param_type
+        self.description: str = description
+        self.required: bool = required
 
 
 class ToolOption:
     """
     工具调用项
     """
-
-    name: str  # 工具名称
-    description: str  # 工具描述
-    params: list[ToolParam] | None  # 工具参数列表
 
     def __init__(
         self,
@@ -61,9 +52,9 @@ class ToolOption:
         :param description: 工具描述
         :param params: 工具参数列表
         """
-        self.name = name
-        self.description = description
-        self.params = params
+        self.name: str = name
+        self.description: str = description
+        self.params: list[ToolParam] | None = params
 
 
 class ToolOptionBuilder:
@@ -71,14 +62,10 @@ class ToolOptionBuilder:
     工具调用项构建器
     """
 
-    __name: str
-    __description: str
-    __params: list[ToolParam]
-
     def __init__(self):
-        self.__name = ""
-        self.__description = ""
-        self.__params = []
+        self.__name: str = ""
+        self.__description: str = ""
+        self.__params: list[ToolParam] = []
 
     def set_name(self, name: str) -> "ToolOptionBuilder":
         """
@@ -86,7 +73,7 @@ class ToolOptionBuilder:
         :param name: 工具名称
         :return: ToolBuilder实例
         """
-        if name == "":
+        if not name:
             raise ValueError("工具名称不能为空")
         self.__name = name
         return self
@@ -97,7 +84,7 @@ class ToolOptionBuilder:
         :param description: 工具描述
         :return: ToolBuilder实例
         """
-        if description == "":
+        if not description:
             raise ValueError("工具描述不能为空")
         self.__description = description
         return self
@@ -117,7 +104,7 @@ class ToolOptionBuilder:
         :param required: 是否必填（默认为False）
         :return: ToolBuilder实例
         """
-        if name == "" or description == "":
+        if not name or not description:
             raise ValueError("参数名称/描述不能为空")
 
         self.__params.append(
@@ -139,23 +126,17 @@ class ToolOptionBuilder:
         if self.__name == "" or self.__description == "":
             raise ValueError("工具名称/描述不能为空")
 
-        tool = ToolOption(
+        return ToolOption(
             name=self.__name,
             description=self.__description,
             params=None if len(self.__params) == 0 else self.__params,
         )
-
-        return tool
 
 
 class ToolCall:
     """
     来自模型反馈的工具调用
     """
-
-    call_id: str  # 工具调用ID
-    func_name: str  # 要调用的函数名称
-    args: dict | None  # 工具调用参数
 
     def __init__(
         self,
@@ -169,6 +150,6 @@ class ToolCall:
         :param func_name: 要调用的函数名称
         :param args: 工具调用参数
         """
-        self.call_id = call_id
-        self.func_name = func_name
-        self.args = args
+        self.call_id: str = call_id
+        self.func_name: str = func_name
+        self.args: dict | None = args

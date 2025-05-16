@@ -1,31 +1,28 @@
 import importlib
+from typing import Dict
 
-from pymongo.synchronous.database import Database
 
 from .config.config import (
-    ModelUsageConfig,
+    ModelUsageArgConfig,
     ModuleConfig,
 )
 
 from . import _logger as logger
 from .model_client import ModelRequestHandler, BaseClient
-from .usage_statistic import ModelUsageStatistic
 
 
 class ModelManager:
-    config: ModuleConfig
-    usage_statistic: ModelUsageStatistic  # 任务的使用统计信息
-    api_client_map: dict[str, BaseClient]  # API客户端列表
     # TODO: 添加读写锁，防止异步刷新配置时发生数据竞争
 
     def __init__(
         self,
         config: ModuleConfig,
-        db: Database | None = None,
     ):
-        self.config = config
-        self.usage_statistic = ModelUsageStatistic(db)
-        self.api_client_map = {}
+        self.config: ModuleConfig = config
+        """配置信息"""
+
+        self.api_client_map: Dict[str, BaseClient] = {}
+        """API客户端映射表"""
 
         for provider_name, api_provider in self.config.api_providers.items():
             # 初始化API客户端
@@ -48,7 +45,7 @@ class ModelManager:
                 logger.error(f"Failed to import client module: {e}")
                 raise ImportError(
                     f"Failed to import client module for '{provider_name}': {e}"
-                )
+                ) from e
 
     def __getitem__(self, task_name: str) -> ModelRequestHandler:
         """
@@ -56,18 +53,22 @@ class ModelManager:
         :param task_name: 任务名称
         :return: 模型客户端
         """
-        if task_name not in self.config.task_model_usage_map:
+        if task_name not in self.config.task_model_arg_map:
             raise KeyError(f"'{task_name}' not registered in ModelManager")
 
-        return ModelRequestHandler(task_name=task_name, manager=self)
+        return ModelRequestHandler(
+            task_name=task_name,
+            config=self.config,
+            api_client_map=self.api_client_map,
+        )
 
-    def __setitem__(self, task_name: str, value: ModelUsageConfig):
+    def __setitem__(self, task_name: str, value: ModelUsageArgConfig):
         """
         注册任务的模型使用配置
         :param task_name: 任务名称
         :param value: 模型使用配置
         """
-        self.config.task_model_usage_map[task_name] = value
+        self.config.task_model_arg_map[task_name] = value
 
     def __contains__(self, task_name: str):
         """
@@ -75,4 +76,4 @@ class ModelManager:
         :param task_name: 任务名称
         :return: 是否在模型列表中
         """
-        return task_name in self.config.task_model_usage_map
+        return task_name in self.config.task_model_arg_map

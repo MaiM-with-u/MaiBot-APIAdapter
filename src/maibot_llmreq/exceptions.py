@@ -33,7 +33,7 @@ class ReqAbortException(Exception):
         self.message = message
 
     def __str__(self):
-        return self.message if self.message else "请求因未知原因异常终止"
+        return self.message or "请求因未知原因异常终止"
 
 
 class RespNotOkException(Exception):
