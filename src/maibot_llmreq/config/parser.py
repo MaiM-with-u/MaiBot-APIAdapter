@@ -9,8 +9,8 @@ from packaging.version import Version, InvalidVersion
 from .. import _logger as logger
 
 from .config import (
-    ModelUsageConfigItem,
-    ModelUsageConfig,
+    ModelUsageArgConfigItem,
+    ModelUsageArgConfig,
     APIProvider,
     ModelInfo,
     NEWEST_VER,
@@ -26,21 +26,16 @@ def _get_config_version(toml: Dict) -> Version:
         Version
     """
 
-    if "inner" in toml:
-        try:
-            config_version: str = toml["inner"]["version"]
-        except KeyError as e:
-            logger.error("配置文件中 inner 段 不存在 version 键")
-            raise KeyError(f"配置文件中 inner 段 不存在 {e}, 这是错误的配置文件") from e
+    if "inner" in toml and "version" in toml["inner"]:
+        config_version: str = toml["inner"]["version"]
     else:
-        toml["inner"] = {"version": "0.0.0"}
-        config_version = toml["inner"]["version"]
+        config_version = "0.0.0"  # 默认版本
 
     try:
         ver = version.parse(config_version)
     except InvalidVersion as e:
         logger.error(
-            "配置文件中 inner 段 的 version 键是错误的版本描述\n"
+            "配置文件中 inner段 的 version 键是错误的版本描述\n"
             f"请检查配置文件，当前 version 键: {config_version}\n"
             f"错误信息: {e}"
         )
@@ -130,9 +125,9 @@ def _models(parent: Dict, config: ModuleConfig):
 
 def _task_model_usage(parent: Dict, config: ModuleConfig):
     model_usage_configs = parent.get("task_model_usage")
-    config.task_model_usage_map = {}
+    config.task_model_arg_map = {}
     for task_name, item in model_usage_configs.items():
-        if task_name in config.task_model_usage_map:
+        if task_name in config.task_model_arg_map:
             logger.error(f"子任务 {task_name} 已存在，请检查配置文件。")
             raise KeyError(f"子任务 {task_name} 已存在，请检查配置文件。")
 
@@ -140,7 +135,7 @@ def _task_model_usage(parent: Dict, config: ModuleConfig):
         if isinstance(item, Dict):
             if "model" in item:
                 usage.append(
-                    ModelUsageConfigItem(
+                    ModelUsageArgConfigItem(
                         name=item["model"],
                         temperature=item.get("temperature", None),
                         max_tokens=item.get("max_tokens", None),
@@ -156,7 +151,7 @@ def _task_model_usage(parent: Dict, config: ModuleConfig):
             for model in item:
                 if isinstance(model, Dict):
                     usage.append(
-                        ModelUsageConfigItem(
+                        ModelUsageArgConfigItem(
                             name=model["model"],
                             temperature=model.get("temperature", None),
                             max_tokens=model.get("max_tokens", None),
@@ -165,7 +160,7 @@ def _task_model_usage(parent: Dict, config: ModuleConfig):
                     )
                 elif isinstance(model, str):
                     usage.append(
-                        ModelUsageConfigItem(
+                        ModelUsageArgConfigItem(
                             name=model,
                             temperature=None,
                             max_tokens=None,
@@ -181,7 +176,7 @@ def _task_model_usage(parent: Dict, config: ModuleConfig):
                     )
         elif isinstance(item, str):
             usage.append(
-                ModelUsageConfigItem(
+                ModelUsageArgConfigItem(
                     name=item,
                     temperature=None,
                     max_tokens=None,
@@ -189,7 +184,7 @@ def _task_model_usage(parent: Dict, config: ModuleConfig):
                 )
             )
 
-        config.task_model_usage_map[task_name] = ModelUsageConfig(
+        config.task_model_arg_map[task_name] = ModelUsageArgConfig(
             name=task_name,
             usage=usage,
         )

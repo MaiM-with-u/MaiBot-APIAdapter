@@ -1,12 +1,17 @@
 import asyncio
-from typing import Callable, Any, Tuple, List, Dict
+from typing import Callable, Any
 
 from openai import AsyncStream
 from openai.types.chat import ChatCompletionChunk, ChatCompletion
 
 from .base_client import BaseClient, APIResponse
 from .. import _logger as logger
-from ..config.config import ModelInfo, ModelUsageConfigItem, RequestConfig, ModuleConfig
+from ..config.config import (
+    ModelInfo,
+    ModelUsageArgConfigItem,
+    RequestConfig,
+    ModuleConfig,
+)
 from ..exceptions import (
     NetworkConnectionError,
     ReqAbortException,
@@ -16,7 +21,6 @@ from ..exceptions import (
 from ..payload_content.message import Message
 from ..payload_content.resp_format import RespFormat
 from ..payload_content.tool_option import ToolOption
-from ..usage_statistic import ModelUsageStatistic, UsageCallStatus
 from ..utils import compress_messages
 
 
@@ -27,7 +31,7 @@ def _check_retry(
     cannot_retry_msg: str,
     can_retry_callable: Callable | None = None,
     **kwargs,
-) -> Tuple[int, Any | None]:
+) -> tuple[int, Any | None]:
     """
     辅助函数：检查是否可以重试
     :param remain_try: 剩余尝试次数
@@ -55,7 +59,7 @@ def _handle_resp_not_ok(
     model_name: str,
     remain_try: int,
     retry_interval: int = 10,
-    messages: Tuple[List[Message], bool] | None = None,
+    messages: tuple[list[Message], bool] | None = None,
 ):
     """
     处理响应错误异常
@@ -76,10 +80,9 @@ def _handle_resp_not_ok(
         )
         return -1, None  # 不再重试请求该模型
     elif e.status_code == 413:
-        # 请求体过大
         if messages and not messages[1]:
             # 消息列表不为空且未压缩，尝试压缩消息
-            _check_retry(
+            return _check_retry(
                 remain_try,
                 0,
                 can_retry_msg=(
@@ -93,13 +96,12 @@ def _handle_resp_not_ok(
                 can_retry_callable=compress_messages,
                 messages=messages[0],
             )
-        else:
-            # 没有消息可压缩
-            logger.warning(
-                f"任务-'{task_name}' 模型-'{model_name}'\n"
-                "请求体过大，无法压缩消息，放弃请求。"
-            )
-            return -1, None
+        # 没有消息可压缩
+        logger.warning(
+            f"任务-'{task_name}' 模型-'{model_name}'\n"
+            "请求体过大，无法压缩消息，放弃请求。"
+        )
+        return -1, None
     elif e.status_code == 429:
         # 请求过于频繁
         return _check_retry(
@@ -143,8 +145,8 @@ def default_exception_handler(
     model_name: str,
     remain_try: int,
     retry_interval: int = 10,
-    messages: Tuple[List[Message], bool] | None = None,
-) -> Tuple[int, List[Message] | None]:
+    messages: tuple[list[Message], bool] | None = None,
+) -> tuple[int, list[Message] | None]:
     """
     默认异常处理函数
     :param e: 异常对象
@@ -203,27 +205,26 @@ class ModelRequestHandler:
     模型请求处理器
     """
 
-    task_name: str  # 任务名称
-    client_map: Dict[str, BaseClient]  # 客户端列表
-    configs: List[Tuple[ModelInfo, ModelUsageConfigItem]]  # 模型使用配置
-    usage_statistic: ModelUsageStatistic  # 任务的使用统计信息
-    req_conf: RequestConfig  # 请求配置
-
     def __init__(
         self,
         task_name: str,
-        usage_statistic: ModelUsageStatistic,
         config: ModuleConfig,
-        api_client_map: Dict[str, BaseClient],
+        api_client_map: dict[str, BaseClient],
     ):
-        self.task_name = task_name
-        self.client_map = {}
-        self.configs = []
-        self.usage_statistic = usage_statistic
-        self.req_conf = config.req_conf
+        self.task_name: str = task_name
+        """任务名称"""
+
+        self.client_map: dict[str, BaseClient] = {}
+        """API客户端列表"""
+
+        self.configs: list[tuple[ModelInfo, ModelUsageArgConfigItem]] = []
+        """模型参数配置"""
+
+        self.req_conf: RequestConfig = config.req_conf
+        """请求配置"""
 
         # 获取模型与使用配置
-        for model_usage in config.task_model_usage_map[task_name].usage:
+        for model_usage in config.task_model_arg_map[task_name].usage:
             if model_usage.name not in config.models:
                 logger.error(f"Model '{model_usage.name}' not found in ModelManager")
                 raise KeyError(f"Model '{model_usage.name}' not found in ModelManager")
@@ -239,8 +240,8 @@ class ModelRequestHandler:
 
     async def get_response(
         self,
-        messages: List[Message],
-        tool_options: List[ToolOption] | None = None,
+        messages: list[Message],
+        tool_options: list[ToolOption] | None = None,
         response_format: RespFormat | None = None,  # 暂不启用
         stream_response_handler: Callable[
             [AsyncStream[ChatCompletionChunk], asyncio.Event | None], APIResponse
@@ -263,7 +264,7 @@ class ModelRequestHandler:
         for config_item in self.configs:
             client = self.client_map[config_item[0].api_provider]
             model_info: ModelInfo = config_item[0]
-            model_usage_config: ModelUsageConfigItem = config_item[1]
+            model_usage_config: ModelUsageArgConfigItem = config_item[1]
 
             remain_try = (
                 model_usage_config.max_retry or self.req_conf.max_retry
@@ -272,52 +273,23 @@ class ModelRequestHandler:
             compressed_messages = None
             retry_interval = self.req_conf.retry_interval
             while remain_try > 0:
-                record_id: str | None = None
                 try:
-                    # 创建响应记录
-                    record_id = self.usage_statistic.create_usage(
-                        model_name=model_info.name,
-                        task_name=self.task_name,
-                    )
-                    # 获取响应
-                    response = await client.get_response(
+                    return await client.get_response(
                         model_info,
-                        message_list=(
-                            compressed_messages if compressed_messages else messages
-                        ),
+                        message_list=(compressed_messages or messages),
                         tool_options=tool_options,
                         max_tokens=model_usage_config.max_tokens
-                        if model_usage_config.max_tokens
-                        else self.req_conf.default_max_tokens,
+                        or self.req_conf.default_max_tokens,
                         temperature=model_usage_config.temperature
-                        if model_usage_config.temperature
-                        else self.req_conf.default_temperature,
+                        or self.req_conf.default_temperature,
                         response_format=response_format,
                         stream_response_handler=stream_response_handler,
                         async_response_parser=async_response_parser,
                         interrupt_flag=interrupt_flag,
                     )
-                    # 统计usage
-                    if response.usage is not None:
-                        # 记录模型使用情况
-                        self.usage_statistic.update_usage(
-                            record_id=record_id,
-                            model_info=model_info,
-                            usage_data=response.usage,
-                        )
-                    return response
                 except Exception as e:
                     logger.trace(e)
                     remain_try -= 1  # 剩余尝试次数减1
-
-                    # 若有RecordID，更新模型使用情况
-                    if record_id:
-                        self.usage_statistic.update_usage(
-                            record_id=record_id,
-                            model_info=model_info,
-                            stat=UsageCallStatus.FAILURE,
-                            ext_msg=str(e),
-                        )
 
                     # 处理异常
                     handle_res = default_exception_handler(
@@ -356,37 +328,20 @@ class ModelRequestHandler:
         for config in self.configs:
             client = self.client_map[config[0].api_provider]
             model_info: ModelInfo = config[0]
-            model_usage_config: ModelUsageConfigItem = config[1]
+            model_usage_config: ModelUsageArgConfigItem = config[1]
             remain_try = (
                 model_usage_config.max_retry or self.req_conf.max_retry
             ) + 1  # 初始化：剩余尝试次数 = 最大重试次数 + 1
 
             while remain_try:
-                record_id: str | None = None
                 try:
-                    # 创建响应记录
-                    record_id = self.usage_statistic.create_usage(
-                        model_name=model_info.name,
-                        task_name=self.task_name,
-                    )
-                    # 获取嵌入向量
-                    embedding = await client.get_embedding(
+                    return await client.get_embedding(
                         model_info=model_info,
                         embedding_input=embedding_input,
                     )
-                    return embedding
                 except Exception as e:
                     logger.trace(e)
                     remain_try -= 1  # 剩余尝试次数减1
-
-                    # 若有RecordID，更新模型使用情况
-                    if record_id:
-                        self.usage_statistic.update_usage(
-                            record_id=record_id,
-                            model_info=model_info,
-                            stat=UsageCallStatus.FAILURE,
-                            ext_msg=str(e),
-                        )
 
                     # 处理异常
                     handle_res = default_exception_handler(

@@ -2,7 +2,8 @@ import asyncio
 import io
 import json
 import re
-from typing import Callable, List, Dict, Tuple
+from collections.abc import Iterable
+from typing import Callable, Any
 
 from openai import (
     AsyncOpenAI,
@@ -11,10 +12,15 @@ from openai import (
     NOT_GIVEN,
     AsyncStream,
 )
-from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionChunk,
+    ChatCompletionMessageParam,
+    ChatCompletionToolParam,
+)
 from openai.types.chat.chat_completion_chunk import ChoiceDelta
 
-from .base_client import APIResponse
+from .base_client import APIResponse, UsageRecord
 from ..config.config import ModelInfo, APIProvider
 from . import BaseClient
 
@@ -29,31 +35,28 @@ from ..payload_content.resp_format import RespFormat
 from ..payload_content.tool_option import ToolOption, ToolParam, ToolCall
 
 
-def _convert_messages(messages: List[Message]) -> List[dict]:
+def _convert_messages(messages: list[Message]) -> list[ChatCompletionMessageParam]:
     """
     转换消息格式 - 将消息转换为OpenAI API所需的格式
     :param messages: 消息列表
     :return: 转换后的消息列表
     """
 
-    def _convert_message_item(message: Message) -> Dict:
+    def _convert_message_item(message: Message) -> ChatCompletionMessageParam:
         """
         转换单个消息格式
         :param message: 消息对象
         :return: 转换后的消息字典
         """
-        ret = {
-            "role": message.role.value,
-        }
 
         # 添加Content
-        content: str | List[Dict]
+        content: str | list[dict[str, Any]]
         if isinstance(message.content, str):
             content = message.content
-        elif isinstance(message.content, List):
+        elif isinstance(message.content, list):
             content = []
             for item in message.content:
-                if isinstance(item, Tuple):
+                if isinstance(item, tuple):
                     content.append(
                         {
                             "type": "image_url",
@@ -67,7 +70,10 @@ def _convert_messages(messages: List[Message]) -> List[dict]:
         else:
             raise RuntimeError("无法触及的代码：请使用MessageBuilder类构建消息对象")
 
-        ret["content"] = content
+        ret = {
+            "role": message.role.value,
+            "content": content,
+        }
 
         # 添加工具调用ID
         if message.role == RoleType.Tool:
@@ -80,14 +86,14 @@ def _convert_messages(messages: List[Message]) -> List[dict]:
     return [_convert_message_item(message) for message in messages]
 
 
-def _convert_tool_options(tool_options: List[ToolOption]) -> List[Dict]:
+def _convert_tool_options(tool_options: list[ToolOption]) -> list[dict[str, Any]]:
     """
     转换工具选项格式 - 将工具选项转换为OpenAI API所需的格式
     :param tool_options: 工具选项列表
     :return: 转换后的工具选项列表
     """
 
-    def _convert_tool_param(tool_option_param: ToolParam) -> Dict:
+    def _convert_tool_param(tool_option_param: ToolParam) -> dict[str, str]:
         """
         转换单个工具参数格式
         :param tool_option_param: 工具参数对象
@@ -98,13 +104,13 @@ def _convert_tool_options(tool_options: List[ToolOption]) -> List[Dict]:
             "description": tool_option_param.description,
         }
 
-    def _convert_tool_option_item(tool_option: ToolOption) -> Dict:
+    def _convert_tool_option_item(tool_option: ToolOption) -> dict[str, Any]:
         """
         转换单个工具项格式
         :param tool_option: 工具选项对象
         :return: 转换后的工具选项字典
         """
-        ret = {
+        ret: dict[str, Any] = {
             "name": tool_option.name,
             "description": tool_option.description,
         }
@@ -121,7 +127,13 @@ def _convert_tool_options(tool_options: List[ToolOption]) -> List[Dict]:
             }
         return ret
 
-    return [_convert_tool_option_item(tool_option) for tool_option in tool_options]
+    return [
+        {
+            "type": "function",
+            "function": _convert_tool_option_item(tool_option),
+        }
+        for tool_option in tool_options
+    ]
 
 
 def _process_delta(
@@ -130,7 +142,7 @@ def _process_delta(
     in_rc_flag: bool,
     rc_delta_buffer: io.StringIO,
     fc_delta_buffer: io.StringIO,
-    tool_calls_buffer: List[Tuple[str, str, io.StringIO]],
+    tool_calls_buffer: list[tuple[str, str, io.StringIO]],
 ) -> bool:
     # 接收content
     if has_rc_attr_flag:
@@ -144,16 +156,7 @@ def _process_delta(
             fc_delta_buffer.write(delta.content)
     elif hasattr(delta, "content") and delta.content is not None:
         # 没有独立的推理内容块，但有正式内容
-        if not in_rc_flag:
-            # 当前不在推理内容块中
-            if delta.content == "<think>" and not fc_delta_buffer.getvalue():
-                # 如果当前内容是<think>，且正式内容缓冲区为空，说明<think>为输出的首个token
-                # 则将其视为推理内容的开始标记，进入推理内容块
-                in_rc_flag = True
-            else:
-                # 其他情况视为正式内容，加入正式内容缓冲区
-                fc_delta_buffer.write(delta.content)
-        else:
+        if in_rc_flag:
             # 当前在推理内容块中
             if delta.content == "</think>":
                 # 如果当前内容是</think>，则将其视为推理内容的结束标记，退出推理内容块
@@ -161,6 +164,13 @@ def _process_delta(
             else:
                 # 其他情况视为推理内容，加入推理内容缓冲区
                 rc_delta_buffer.write(delta.content)
+        elif delta.content == "<think>" and not fc_delta_buffer.getvalue():
+            # 如果当前内容是<think>，且正式内容缓冲区为空，说明<think>为输出的首个token
+            # 则将其视为推理内容的开始标记，进入推理内容块
+            in_rc_flag = True
+        else:
+            # 其他情况视为正式内容，加入正式内容缓冲区
+            fc_delta_buffer.write(delta.content)
     # 接收tool_calls
     if hasattr(delta, "tool_calls") and delta.tool_calls:
         tool_call_delta = delta.tool_calls[0]
@@ -187,8 +197,7 @@ def _process_delta(
 def _build_stream_api_resp(
     _fc_delta_buffer: io.StringIO,
     _rc_delta_buffer: io.StringIO,
-    _tool_calls_buffer: List[Tuple[str, str, io.StringIO]],
-    _usage_record: Tuple[int, int, int] | None,
+    _tool_calls_buffer: list[tuple[str, str, io.StringIO]],
 ) -> APIResponse:
     resp = APIResponse()
 
@@ -200,7 +209,7 @@ def _build_stream_api_resp(
         # 如果正式内容缓冲区不为空，则将其写入APIResponse对象
         resp.content = _fc_delta_buffer.getvalue()
     _fc_delta_buffer.close()
-    if len(_tool_calls_buffer) > 0:
+    if _tool_calls_buffer:
         # 如果工具调用缓冲区不为空，则将其解析为ToolCall对象列表
         resp.tool_calls = []
         for call_id, function_name, arguments_buffer in _tool_calls_buffer:
@@ -210,26 +219,23 @@ def _build_stream_api_resp(
                 arguments_buffer.close()
                 try:
                     arguments = json.loads(raw_arg_data)
-                    if not isinstance(arguments, Dict):
+                    if not isinstance(arguments, dict):
                         raise RespParseException(
                             None,
                             "响应解析失败，工具调用参数无法解析为字典类型。工具调用参数原始响应：\n"
                             f"{raw_arg_data}",
                         )
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
                     raise RespParseException(
                         None,
                         "响应解析失败，无法解析工具调用参数。工具调用参数原始响应："
                         f"{raw_arg_data}",
-                    )
+                    ) from e
             else:
                 arguments_buffer.close()
                 arguments = None
 
             resp.tool_calls.append(ToolCall(call_id, function_name, arguments))
-    if _usage_record is not None:
-        # 如果使用情况记录不为空，则将其存储在APIResponse对象中
-        resp.usage = _usage_record
 
     return resp
 
@@ -237,7 +243,7 @@ def _build_stream_api_resp(
 async def _default_stream_response_handler(
     resp_stream: AsyncStream[ChatCompletionChunk],
     interrupt_flag: asyncio.Event | None,
-) -> APIResponse:
+) -> tuple[APIResponse, tuple[int, int, int]]:
     """
     流式响应处理函数 - 处理OpenAI API的流式响应
     :param resp_stream: 流式响应对象
@@ -248,8 +254,8 @@ async def _default_stream_response_handler(
     _in_rc_flag = False  # 标记是否在推理内容块中
     _rc_delta_buffer = io.StringIO()  # 推理内容缓冲区，用于存储接收到的推理内容
     _fc_delta_buffer = io.StringIO()  # 正式内容缓冲区，用于存储接收到的正式内容
-    _tool_calls_buffer: List[
-        Tuple[str, str, io.StringIO]
+    _tool_calls_buffer: list[
+        tuple[str, str, io.StringIO]
     ] = []  # 工具调用缓冲区，用于存储接收到的工具调用
     _usage_record = None  # 使用情况记录
 
@@ -284,7 +290,7 @@ async def _default_stream_response_handler(
             _tool_calls_buffer,
         )
 
-        if event.usage is not None:
+        if event.usage:
             # 如果有使用情况，则将其存储在APIResponse对象中
             _usage_record = (
                 event.usage.prompt_tokens,
@@ -297,8 +303,7 @@ async def _default_stream_response_handler(
             _fc_delta_buffer,
             _rc_delta_buffer,
             _tool_calls_buffer,
-            _usage_record,
-        )
+        ), _usage_record
     except Exception:
         # 确保缓冲区被关闭
         _insure_buffer_closed()
@@ -312,7 +317,9 @@ pattern = re.compile(
 """用于解析推理内容的正则表达式"""
 
 
-def _default_async_response_parser(resp: ChatCompletion) -> APIResponse:
+def _default_normal_response_parser(
+    resp: ChatCompletion,
+) -> tuple[APIResponse, tuple[int, int, int]]:
     """
     解析对话补全响应 - 将OpenAI API响应解析为APIResponse对象
     :param resp: 响应对象
@@ -328,7 +335,7 @@ def _default_async_response_parser(resp: ChatCompletion) -> APIResponse:
         # 有有效的推理字段
         api_response.content = message_part.content
         api_response.reasoning_content = message_part.reasoning_content
-    else:
+    elif message_part.content:
         # 提取推理和内容
         match = pattern.match(message_part.content)
         if not match:
@@ -342,41 +349,43 @@ def _default_async_response_parser(resp: ChatCompletion) -> APIResponse:
         api_response.reasoning_content, api_response.content = result
 
     # 提取工具调用
-    if hasattr(message_part, "tool_calls"):
+    if message_part.tool_calls:
         api_response.tool_calls = []
         for call in message_part.tool_calls:
             try:
                 arguments = json.loads(call.function.arguments)
-                if not isinstance(arguments, Dict):
+                if not isinstance(arguments, dict):
                     raise RespParseException(
                         resp, "响应解析失败，工具调用参数无法解析为字典类型"
                     )
                 api_response.tool_calls.append(
                     ToolCall(call.id, call.function.name, arguments)
                 )
-            except json.JSONDecodeError:
-                raise RespParseException(resp, "响应解析失败，无法解析工具调用参数")
+            except json.JSONDecodeError as e:
+                raise RespParseException(
+                    resp, "响应解析失败，无法解析工具调用参数"
+                ) from e
 
     # 提取Usage信息
-    if hasattr(resp, "usage"):
-        api_response.usage = (
+    if resp.usage:
+        _usage_record = (
             resp.usage.prompt_tokens,
             resp.usage.completion_tokens,
             resp.usage.total_tokens,
         )
+    else:
+        _usage_record = None
 
     # 将原始响应存储在原始数据中
     api_response.raw_data = resp
 
-    return api_response
+    return api_response, _usage_record
 
 
 class OpenaiClient(BaseClient):
-    client: AsyncOpenAI
-
     def __init__(self, api_provider: APIProvider):
         super().__init__(api_provider)
-        self.client = AsyncOpenAI(
+        self.client: AsyncOpenAI = AsyncOpenAI(
             base_url=api_provider.base_url,
             api_key=api_provider.api_key,
             max_retries=0,
@@ -385,16 +394,20 @@ class OpenaiClient(BaseClient):
     async def get_response(
         self,
         model_info: ModelInfo,
-        message_list: List[Message],
-        tool_options: List[ToolOption] | None = None,
+        message_list: list[Message],
+        tool_options: list[ToolOption] | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.7,
         response_format: RespFormat | None = None,
         stream_response_handler: Callable[
-            [AsyncStream[ChatCompletionChunk], asyncio.Event | None], APIResponse
+            [AsyncStream[ChatCompletionChunk], asyncio.Event | None],
+            tuple[APIResponse, tuple[int, int, int]],
         ]
         | None = None,
-        async_response_parser: Callable[[ChatCompletion], APIResponse] | None = None,
+        async_response_parser: Callable[
+            [ChatCompletion], tuple[APIResponse, tuple[int, int, int]]
+        ]
+        | None = None,
         interrupt_flag: asyncio.Event | None = None,
     ) -> APIResponse:
         """
@@ -414,15 +427,17 @@ class OpenaiClient(BaseClient):
             stream_response_handler = _default_stream_response_handler
 
         if async_response_parser is None:
-            async_response_parser = _default_async_response_parser
+            async_response_parser = _default_normal_response_parser
 
         # 将messages构造为OpenAI API所需的格式
-        messages = _convert_messages(message_list)
+        messages: Iterable[ChatCompletionMessageParam] = _convert_messages(message_list)
         # 将tool_options转换为OpenAI API所需的格式
-        tools = _convert_tool_options(tool_options) if tool_options else None
+        tools: Iterable[ChatCompletionToolParam] = (
+            _convert_tool_options(tool_options) if tool_options else NOT_GIVEN
+        )
 
-        if model_info.force_stream_mode:
-            try:
+        try:
+            if model_info.force_stream_mode:
                 req_task = asyncio.create_task(
                     self.client.chat.completions.create(
                         model=model_info.model_identifier,
@@ -431,7 +446,7 @@ class OpenaiClient(BaseClient):
                         temperature=temperature,
                         max_tokens=max_tokens,
                         stream=True,
-                        response_format=response_format
+                        response_format=response_format.to_dict()
                         if response_format
                         else NOT_GIVEN,
                     )
@@ -443,14 +458,10 @@ class OpenaiClient(BaseClient):
                         raise ReqAbortException("请求被外部信号中断")
                     await asyncio.sleep(0.1)  # 等待0.1秒后再次检查任务&中断信号量状态
 
-                return await stream_response_handler(req_task.result(), interrupt_flag)
-            except APIConnectionError:
-                raise NetworkConnectionError()
-            except APIStatusError as e:
-                # 重封装APIError为RespNotOkException
-                raise RespNotOkException(e.status_code, e.message)
-        else:
-            try:
+                resp, usage_record = await stream_response_handler(
+                    req_task.result(), interrupt_flag
+                )
+            else:
                 # 发送请求并获取响应
                 req_task = asyncio.create_task(
                     self.client.chat.completions.create(
@@ -460,7 +471,7 @@ class OpenaiClient(BaseClient):
                         temperature=temperature,
                         max_tokens=max_tokens,
                         stream=False,
-                        response_format=response_format
+                        response_format=response_format.to_dict()
                         if response_format
                         else NOT_GIVEN,
                     )
@@ -472,12 +483,24 @@ class OpenaiClient(BaseClient):
                         raise ReqAbortException("请求被外部信号中断")
                     await asyncio.sleep(0.5)  # 等待0.5秒后再次检查任务&中断信号量状态
 
-                return async_response_parser(req_task.result())
-            except APIConnectionError:
-                raise NetworkConnectionError()
-            except APIStatusError as e:
-                # 重封装APIError为RespNotOkException
-                raise RespNotOkException(e.status_code, e.message)
+                resp, usage_record = async_response_parser(req_task.result())
+        except APIConnectionError as e:
+            # 重封装APIConnectionError为NetworkConnectionError
+            raise NetworkConnectionError() from e
+        except APIStatusError as e:
+            # 重封装APIError为RespNotOkException
+            raise RespNotOkException(e.status_code, e.message) from e
+
+        if usage_record:
+            resp.usage = UsageRecord(
+                model_name=model_info.name,
+                provider_name=model_info.api_provider,
+                prompt_tokens=usage_record[0],
+                completion_tokens=usage_record[1],
+                total_tokens=usage_record[2],
+            )
+
+        return resp
 
     async def get_embedding(
         self,
@@ -495,11 +518,11 @@ class OpenaiClient(BaseClient):
                 model=model_info.model_identifier,
                 input=embedding_input,
             )
-        except APIConnectionError:
-            raise NetworkConnectionError()
+        except APIConnectionError as e:
+            raise NetworkConnectionError() from e
         except APIStatusError as e:
             # 重封装APIError为RespNotOkException
-            raise RespNotOkException(e.status_code)
+            raise RespNotOkException(e.status_code) from e
 
         response = APIResponse()
 
@@ -514,10 +537,12 @@ class OpenaiClient(BaseClient):
 
         # 解析使用情况
         if hasattr(raw_response, "usage"):
-            response.usage = (
-                raw_response.usage.prompt_tokens,
-                raw_response.usage.completion_tokens,
-                raw_response.usage.total_tokens,
+            response.usage = UsageRecord(
+                model_name=model_info.name,
+                provider_name=model_info.api_provider,
+                prompt_tokens=raw_response.usage.prompt_tokens,
+                completion_tokens=raw_response.usage.completion_tokens,
+                total_tokens=raw_response.usage.total_tokens,
             )
 
         return response

@@ -70,7 +70,7 @@ class TestConfigLoad:
         assert config.req_conf.timeout == 10
         assert "provider1" in config.api_providers
         assert "model1" in config.models
-        assert "task1" in config.task_model_usage_map
+        assert "task1" in config.task_model_arg_map
 
     def test_raises_error_for_missing_required_field(self, tmp_path):
         maibot_llmreq.init_logger()

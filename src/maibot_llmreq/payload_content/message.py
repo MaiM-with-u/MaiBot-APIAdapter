@@ -1,5 +1,4 @@
 from enum import Enum
-from typing import Tuple, List
 
 
 # 设计这系列类的目的是为未来可能的扩展做准备
@@ -16,37 +15,26 @@ SUPPORTED_IMAGE_FORMATS = ["jpg", "jpeg", "png", "webp", "gif"]
 
 
 class Message:
-    # 角色：system、user、assistant、tool
-    role: RoleType
-    # 内容：提示词、图片与提示词的列表
-    content: str | List[Tuple[str, str] | str]
-    # 工具调用指令的id
-    tool_call_id: str | None
-
     def __init__(
         self,
         role: RoleType,
-        content: str | List[Tuple[str, str] | str],
+        content: str | list[tuple[str, str] | str],
         tool_call_id: str | None = None,
     ):
         """
         初始化消息对象
         （不应直接修改Message类，而应使用MessageBuilder类来构建对象）
         """
-        self.role = role
-        self.content = content
-        self.tool_call_id = tool_call_id
+        self.role: RoleType = role
+        self.content: str | list[tuple[str, str] | str] = content
+        self.tool_call_id: str | None = tool_call_id
 
 
 class MessageBuilder:
-    __role: RoleType
-    __content: List[Tuple[str, str] | str]
-    __tool_call_id: str | None
-
     def __init__(self):
-        self.__role = RoleType.User
-        self.__content = []
-        self.__tool_call_id = None
+        self.__role: RoleType = RoleType.User
+        self.__content: list[tuple[str, str] | str] = []
+        self.__tool_call_id: str | None = None
 
     def set_role(self, role: RoleType = RoleType.User) -> "MessageBuilder":
         """
@@ -77,7 +65,7 @@ class MessageBuilder:
         """
         if image_format.lower() not in SUPPORTED_IMAGE_FORMATS:
             raise ValueError("不受支持的图片格式")
-        if image_base64 == "":
+        if not image_base64:
             raise ValueError("图片的base64编码不能为空")
         self.__content.append((image_format, image_base64))
         return self
@@ -90,7 +78,7 @@ class MessageBuilder:
         """
         if self.__role != RoleType.Tool:
             raise ValueError("仅当角色为Tool时才能添加工具调用ID")
-        if tool_call_id == "":
+        if not tool_call_id:
             raise ValueError("工具调用ID不能为空")
         self.__tool_call_id = tool_call_id
         return self
@@ -105,7 +93,7 @@ class MessageBuilder:
         if self.__role == RoleType.Tool and self.__tool_call_id is None:
             raise ValueError("Tool角色的工具调用ID不能为空")
 
-        message = Message(
+        return Message(
             role=self.__role,
             content=(
                 self.__content[0]
@@ -114,5 +102,3 @@ class MessageBuilder:
             ),
             tool_call_id=self.__tool_call_id,
         )
-
-        return message

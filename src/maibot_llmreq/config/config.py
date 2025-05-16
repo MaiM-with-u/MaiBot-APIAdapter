@@ -39,7 +39,7 @@ class RequestConfig:
 
 
 @dataclass
-class ModelUsageConfigItem:
+class ModelUsageArgConfigItem:
     """模型使用的配置类
     该类用于加载和存储子任务模型使用的配置
     """
@@ -51,13 +51,13 @@ class ModelUsageConfigItem:
 
 
 @dataclass
-class ModelUsageConfig:
+class ModelUsageArgConfig:
     """子任务使用模型的配置类
     该类用于加载和存储子任务使用的模型配置
     """
 
     name: str = ""  # 任务名称
-    usage: List[ModelUsageConfigItem] = field(
+    usage: List[ModelUsageArgConfigItem] = field(
         default_factory=lambda: []
     )  # 任务使用的模型列表
 
@@ -71,6 +71,6 @@ class ModuleConfig:
         default_factory=lambda: {}
     )  # API提供商列表
     models: Dict[str, ModelInfo] = field(default_factory=lambda: {})  # 模型列表
-    task_model_usage_map: Dict[str, ModelUsageConfig] = field(
+    task_model_arg_map: Dict[str, ModelUsageArgConfig] = field(
         default_factory=lambda: {}
     )
