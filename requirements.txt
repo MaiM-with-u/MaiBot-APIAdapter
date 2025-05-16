@@ -5,3 +5,4 @@ tomli
 packaging
 openai
 pydantic
+google-genai
