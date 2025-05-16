@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import List, Dict
 
 from packaging.version import Version
 
@@ -38,7 +39,7 @@ class RequestConfig:
 
 
 @dataclass
-class ModelUsageConfigItem:
+class ModelUsageArgConfigItem:
     """模型使用的配置类
     该类用于加载和存储子任务模型使用的配置
     """
@@ -50,26 +51,26 @@ class ModelUsageConfigItem:
 
 
 @dataclass
-class ModelUsageConfig:
+class ModelUsageArgConfig:
     """子任务使用模型的配置类
     该类用于加载和存储子任务使用的模型配置
     """
 
     name: str = ""  # 任务名称
-    usage: list[ModelUsageConfigItem] = field(
+    usage: List[ModelUsageArgConfigItem] = field(
         default_factory=lambda: []
     )  # 任务使用的模型列表
 
 
 @dataclass
 class ModuleConfig:
-    INNER_VERSION: Version = None  # 配置文件版本
+    INNER_VERSION: Version | None = None  # 配置文件版本
 
     req_conf: RequestConfig = field(default_factory=lambda: RequestConfig())  # 请求配置
-    api_providers: dict[str, APIProvider] = field(
+    api_providers: Dict[str, APIProvider] = field(
         default_factory=lambda: {}
     )  # API提供商列表
-    models: dict[str, ModelInfo] = field(default_factory=lambda: {})  # 模型列表
-    task_model_usage_map: dict[str, ModelUsageConfig] = field(
+    models: Dict[str, ModelInfo] = field(default_factory=lambda: {})  # 模型列表
+    task_model_arg_map: Dict[str, ModelUsageArgConfig] = field(
         default_factory=lambda: {}
     )

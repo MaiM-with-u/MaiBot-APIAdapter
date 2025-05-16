@@ -1,15 +1,16 @@
 import os
+from typing import Any, Dict, List
 
 import tomli
 from packaging import version
 from packaging.specifiers import SpecifierSet
-from packaging.version import InvalidVersion, Version
+from packaging.version import Version, InvalidVersion
 
 from .. import _logger as logger
 
 from .config import (
-    ModelUsageConfigItem,
-    ModelUsageConfig,
+    ModelUsageArgConfigItem,
+    ModelUsageArgConfig,
     APIProvider,
     ModelInfo,
     NEWEST_VER,
@@ -17,7 +18,7 @@ from .config import (
 )
 
 
-def _get_config_version(toml: dict) -> Version:
+def _get_config_version(toml: Dict) -> Version:
     """提取配置文件的 SpecifierSet 版本数据
     Args:
         toml[dict]: 输入的配置文件字典
@@ -25,21 +26,16 @@ def _get_config_version(toml: dict) -> Version:
         Version
     """
 
-    if "inner" in toml:
-        try:
-            config_version: str = toml["inner"]["version"]
-        except KeyError as e:
-            logger.error("配置文件中 inner 段 不存在 version 键")
-            raise KeyError(f"配置文件中 inner 段 不存在 {e}, 这是错误的配置文件") from e
+    if "inner" in toml and "version" in toml["inner"]:
+        config_version: str = toml["inner"]["version"]
     else:
-        toml["inner"] = {"version": "0.0.0"}
-        config_version = toml["inner"]["version"]
+        config_version = "0.0.0"  # 默认版本
 
     try:
         ver = version.parse(config_version)
     except InvalidVersion as e:
         logger.error(
-            "配置文件中 inner 段 的 version 键是错误的版本描述\n"
+            "配置文件中 inner段 的 version 键是错误的版本描述\n"
             f"请检查配置文件，当前 version 键: {config_version}\n"
             f"错误信息: {e}"
         )
@@ -50,7 +46,7 @@ def _get_config_version(toml: dict) -> Version:
     return ver
 
 
-def _request_conf(parent: dict, config: ModuleConfig):
+def _request_conf(parent: Dict, config: ModuleConfig):
     request_conf_config = parent.get("request_conf")
     config.req_conf.max_retry = request_conf_config.get(
         "max_retry", config.req_conf.max_retry
@@ -69,7 +65,7 @@ def _request_conf(parent: dict, config: ModuleConfig):
     )
 
 
-def _api_providers(parent: dict, config: ModuleConfig):
+def _api_providers(parent: Dict, config: ModuleConfig):
     api_providers_config = parent.get("api_providers")
     for provider in api_providers_config:
         name = provider.get("name", None)
@@ -93,7 +89,7 @@ def _api_providers(parent: dict, config: ModuleConfig):
             raise ValueError(f"API提供商 '{name}' 的配置不完整，请检查配置文件。")
 
 
-def _models(parent: dict, config: ModuleConfig):
+def _models(parent: Dict, config: ModuleConfig):
     models_config = parent.get("models")
     for model in models_config:
         model_identifier = model.get("model_identifier", None)
@@ -127,21 +123,19 @@ def _models(parent: dict, config: ModuleConfig):
             raise ValueError(f"模型 '{name}' 的配置不完整，请检查配置文件。")
 
 
-def _task_model_usage(parent: dict, config: ModuleConfig):
-    config.task_model_usage_map = {}
-
+def _task_model_usage(parent: Dict, config: ModuleConfig):
     model_usage_configs = parent.get("task_model_usage")
-
+    config.task_model_arg_map = {}
     for task_name, item in model_usage_configs.items():
-        if task_name in config.task_model_usage_map:
+        if task_name in config.task_model_arg_map:
             logger.error(f"子任务 {task_name} 已存在，请检查配置文件。")
             raise KeyError(f"子任务 {task_name} 已存在，请检查配置文件。")
 
         usage = []
-        if isinstance(item, dict):
+        if isinstance(item, Dict):
             if "model" in item:
                 usage.append(
-                    ModelUsageConfigItem(
+                    ModelUsageArgConfigItem(
                         name=item["model"],
                         temperature=item.get("temperature", None),
                         max_tokens=item.get("max_tokens", None),
@@ -153,11 +147,11 @@ def _task_model_usage(parent: dict, config: ModuleConfig):
                 raise ValueError(
                     f"子任务 {task_name} 的模型配置不合法，请检查配置文件。"
                 )
-        elif isinstance(item, list):
+        elif isinstance(item, List):
             for model in item:
-                if isinstance(model, dict):
+                if isinstance(model, Dict):
                     usage.append(
-                        ModelUsageConfigItem(
+                        ModelUsageArgConfigItem(
                             name=model["model"],
                             temperature=model.get("temperature", None),
                             max_tokens=model.get("max_tokens", None),
@@ -166,7 +160,7 @@ def _task_model_usage(parent: dict, config: ModuleConfig):
                     )
                 elif isinstance(model, str):
                     usage.append(
-                        ModelUsageConfigItem(
+                        ModelUsageArgConfigItem(
                             name=model,
                             temperature=None,
                             max_tokens=None,
@@ -182,7 +176,7 @@ def _task_model_usage(parent: dict, config: ModuleConfig):
                     )
         elif isinstance(item, str):
             usage.append(
-                ModelUsageConfigItem(
+                ModelUsageArgConfigItem(
                     name=item,
                     temperature=None,
                     max_tokens=None,
@@ -190,7 +184,7 @@ def _task_model_usage(parent: dict, config: ModuleConfig):
                 )
             )
 
-        config.task_model_usage_map[task_name] = ModelUsageConfig(
+        config.task_model_arg_map[task_name] = ModelUsageArgConfig(
             name=task_name,
             usage=usage,
         )
@@ -200,7 +194,7 @@ def load_config(config_path: str) -> ModuleConfig:
     """从TOML配置文件加载配置"""
     config = ModuleConfig()
 
-    include_configs = {
+    include_configs: Dict[str, Dict[str, Any]] = {
         "request_conf": {
             "func": _request_conf,
             "support": ">=0.0.0",
@@ -234,7 +228,9 @@ def load_config(config_path: str) -> ModuleConfig:
         # 如果在配置中找到了需要的项，调用对应项的闭包函数处理
         for key in include_configs:
             if key in toml_dict:
-                group_specifier_set: SpecifierSet = include_configs[key]["support"]
+                group_specifier_set: SpecifierSet = SpecifierSet(
+                    include_configs[key]["support"]
+                )
 
                 # 检查配置文件版本是否在支持范围内
                 if config.INNER_VERSION in group_specifier_set:
@@ -242,7 +238,7 @@ def load_config(config_path: str) -> ModuleConfig:
                     if "notice" in include_configs[key]:
                         logger.warning(include_configs[key]["notice"])
                     # 调用闭包函数处理配置
-                    include_configs[key]["func"](toml_dict, config)
+                    (include_configs[key]["func"])(toml_dict, config)
                 else:
                     # 如果版本不在支持范围内，崩溃并提示用户
                     logger.error(
