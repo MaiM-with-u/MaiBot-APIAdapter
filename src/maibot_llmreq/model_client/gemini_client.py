@@ -63,7 +63,7 @@ def _convert_messages(
                 if isinstance(item, tuple):
                     content.append(
                         types.Part.from_bytes(
-                            data=item[1], mime_type="image/" + item[0].lower()
+                            data=item[1], mime_type=f"image/{item[0].lower()}"
                         )
                     )
                 elif isinstance(item, str):
@@ -84,7 +84,6 @@ def _convert_messages(
         elif message.role == RoleType.Tool:
             if not message.tool_call_id:
                 raise ValueError("无法触及的代码：请使用MessageBuilder类构建消息对象")
-            pass
         else:
             temp_list.append(_convert_message_item(message))
     if system_instructions:
@@ -169,8 +168,8 @@ def _process_delta(
                         call.args,
                     )
                 )
-            except Exception:
-                raise RespParseException(delta, "响应解析失败，无法解析工具调用参数")
+            except Exception as e:
+                raise RespParseException(delta, "响应解析失败，无法解析工具调用参数") from e
 
 
 def _build_stream_api_resp(
@@ -377,10 +376,7 @@ class GeminiClient(BaseClient):
             generation_config_dict["system_instructions"] = messages[1]
         if response_format and response_format.format_type == RespFormatType.TEXT:
             generation_config_dict["response_mime_type"] = "text/plain"
-        elif response_format and (
-            response_format.format_type
-            == RespFormatType.JSON_OBJ | RespFormatType.JSON_SCHEMA
-        ):
+        elif response_format and response_format.format_type in (RespFormatType.JSON_OBJ, RespFormatType.JSON_SCHEMA):
             generation_config_dict["response_mime_type"] = "application/json"
             generation_config_dict["response_schema"] = response_format.to_dict()
 
@@ -389,7 +385,7 @@ class GeminiClient(BaseClient):
         try:
             if model_info.force_stream_mode:
                 req_task = asyncio.create_task(
-                    self.client.models.generate_content_stream(
+                    self.client.aio.models.generate_content_stream(
                         model=model_info.model_identifier,
                         contents=messages[0],
                         config=generation_config,
@@ -406,7 +402,7 @@ class GeminiClient(BaseClient):
                 )
             else:
                 req_task = asyncio.create_task(
-                    self.client.models.generate_content(
+                    self.client.aio.models.generate_content(
                         model=model_info.model_identifier,
                         contents=messages[0],
                         config=generation_config,
