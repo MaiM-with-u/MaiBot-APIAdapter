@@ -30,7 +30,10 @@ from ..payload_content.tool_option import ToolOption, ToolParam, ToolCall
 
 T = TypeVar("T")
 
-def _convert_messages(messages: list[Message]) -> tuple[list[types.Content], list[str] | None]:
+
+def _convert_messages(
+    messages: list[Message],
+) -> tuple[list[types.Content], list[str] | None]:
     """
     转换消息格式 - 将消息转换为Gemini API所需的格式
     :param messages: 消息列表
@@ -60,7 +63,7 @@ def _convert_messages(messages: list[Message]) -> tuple[list[types.Content], lis
                 if isinstance(item, tuple):
                     content.append(
                         types.Part.from_bytes(
-                            data=item[1], mime_type='image/' + item[0].lower()
+                            data=item[1], mime_type="image/" + item[0].lower()
                         )
                     )
                 elif isinstance(item, str):
@@ -68,7 +71,7 @@ def _convert_messages(messages: list[Message]) -> tuple[list[types.Content], lis
         else:
             raise RuntimeError("无法触及的代码：请使用MessageBuilder类构建消息对象")
 
-        return types.Content(role=role,content=content)
+        return types.Content(role=role, content=content)
 
     temp_list: list[types.Content] = []
     system_instructions: list[str] = []
@@ -92,6 +95,7 @@ def _convert_messages(messages: list[Message]) -> tuple[list[types.Content], lis
         ret: tuple = (temp_list, None)
 
     return ret
+
 
 def _convert_tool_options(tool_options: list[ToolOption]) -> list[FunctionDeclaration]:
     """
@@ -137,6 +141,7 @@ def _convert_tool_options(tool_options: list[ToolOption]) -> list[FunctionDeclar
 
     return [_convert_tool_option_item(tool_option) for tool_option in tool_options]
 
+
 def _process_delta(
     delta: GenerateContentResponse,
     fc_delta_buffer: io.StringIO,
@@ -148,9 +153,7 @@ def _process_delta(
     if delta.text:
         fc_delta_buffer.write(delta.text)
 
-    if (
-        delta.function_calls
-    ):  # 为什么不用hasattr呢，是因为这个属性一定有，即使是个空的
+    if delta.function_calls:  # 为什么不用hasattr呢，是因为这个属性一定有，即使是个空的
         for call in delta.function_calls:
             try:
                 if not isinstance(
@@ -167,9 +170,8 @@ def _process_delta(
                     )
                 )
             except Exception:
-                raise RespParseException(
-                    delta, "响应解析失败，无法解析工具调用参数"
-                )
+                raise RespParseException(delta, "响应解析失败，无法解析工具调用参数")
+
 
 def _build_stream_api_resp(
     _fc_delta_buffer: io.StringIO,
@@ -215,20 +217,22 @@ async def _to_async_iterable(iterable: Iterable[T]) -> AsyncIterator[T]:
 async def _default_stream_response_handler(
     resp_stream: Iterator[GenerateContentResponse],
     interrupt_flag: asyncio.Event | None,
-) -> tuple[APIResponse,tuple[int,int,int]]:
+) -> tuple[APIResponse, tuple[int, int, int]]:
     """
     流式响应处理函数 - 处理Gemini API的流式响应
     :param resp_stream: 流式响应对象,是一个神秘的iterator，我完全不知道这个玩意能不能跑，不过遍历一遍之后它就空了，如果跑不了一点的话可以考虑改成别的东西
     :return: APIResponse对象
     """
     _fc_delta_buffer = io.StringIO()  # 正式内容缓冲区，用于存储接收到的正式内容
-    _tool_calls_buffer: list[tuple[str, str, dict]] = []  # 工具调用缓冲区，用于存储接收到的工具调用
+    _tool_calls_buffer: list[
+        tuple[str, str, dict]
+    ] = []  # 工具调用缓冲区，用于存储接收到的工具调用
     _usage_record = None  # 使用情况记录
 
     def _insure_buffer_closed():
         if _fc_delta_buffer and not _fc_delta_buffer.closed:
             _fc_delta_buffer.close()
-    
+
     async for chunk in _to_async_iterable(resp_stream):
         # 检查是否有中断量
         if interrupt_flag and interrupt_flag.is_set():
@@ -259,7 +263,10 @@ async def _default_stream_response_handler(
         _insure_buffer_closed()
         raise
 
-def _default_normal_response_parser(resp: GenerateContentResponse) -> tuple[APIResponse,tuple[int,int,int]]:
+
+def _default_normal_response_parser(
+    resp: GenerateContentResponse,
+) -> tuple[APIResponse, tuple[int, int, int]]:
     """
     解析对话补全响应 - 将Gemini API响应解析为APIResponse对象
     :param resp: 响应对象
@@ -271,20 +278,22 @@ def _default_normal_response_parser(resp: GenerateContentResponse) -> tuple[APIR
         raise RespParseException(resp, "响应解析失败，缺失candidates字段")
 
     if resp.text:
-        api_response.content=resp.text
-    
+        api_response.content = resp.text
+
     if resp.function_calls:
-        api_response.tool_calls=[]
+        api_response.tool_calls = []
         for call in resp.function_calls:
             try:
                 if not isinstance(call.args, dict):
-                    raise RespParseException(resp, "响应解析失败，工具调用参数无法解析为字典类型")
-                api_response.tool_calls.append(
-                    ToolCall(call.id, call.name, call.args)
-                )
+                    raise RespParseException(
+                        resp, "响应解析失败，工具调用参数无法解析为字典类型"
+                    )
+                api_response.tool_calls.append(ToolCall(call.id, call.name, call.args))
             except Exception as e:
-                raise RespParseException(resp, "响应解析失败，无法解析工具调用参数") from e
-    
+                raise RespParseException(
+                    resp, "响应解析失败，无法解析工具调用参数"
+                ) from e
+
     if resp.usage_metadata:
         _usage_record = (
             resp.usage_metadata.prompt_token_count,
@@ -298,6 +307,7 @@ def _default_normal_response_parser(resp: GenerateContentResponse) -> tuple[APIR
     api_response.raw_data = resp
 
     return api_response, _usage_record
+
 
 class GeminiClient(BaseClient):
     client: genai.Client
@@ -367,7 +377,10 @@ class GeminiClient(BaseClient):
             generation_config_dict["system_instructions"] = messages[1]
         if response_format and response_format.format_type == RespFormatType.TEXT:
             generation_config_dict["response_mime_type"] = "text/plain"
-        elif response_format and (response_format.format_type == RespFormatType.JSON_OBJ | RespFormatType.JSON_SCHEMA):
+        elif response_format and (
+            response_format.format_type
+            == RespFormatType.JSON_OBJ | RespFormatType.JSON_SCHEMA
+        ):
             generation_config_dict["response_mime_type"] = "application/json"
             generation_config_dict["response_schema"] = response_format.to_dict()
 
@@ -388,7 +401,9 @@ class GeminiClient(BaseClient):
                         req_task.cancel()
                         raise ReqAbortException("请求被外部信号中断")
                     await asyncio.sleep(0.1)  # 等待0.1秒后再次检查任务&中断信号量状态
-                resp,usage_record = await stream_response_handler(req_task.result(), interrupt_flag)
+                resp, usage_record = await stream_response_handler(
+                    req_task.result(), interrupt_flag
+                )
             else:
                 req_task = asyncio.create_task(
                     self.client.models.generate_content(
@@ -404,19 +419,19 @@ class GeminiClient(BaseClient):
                         raise ReqAbortException("请求被外部信号中断")
                     await asyncio.sleep(0.5)  # 等待0.5秒后再次检查任务&中断信号量状态
 
-                resp,usage_record = async_response_parser(req_task.result())
+                resp, usage_record = async_response_parser(req_task.result())
         except (ClientError, ServerError) as e:
             # 重封装ClientError和ServerError为RespNotOkException
             raise RespNotOkException(e.status_code, e.message)
         except (
-                UnknownFunctionCallArgumentError,
-                UnsupportedFunctionError,
-                FunctionInvocationError,
+            UnknownFunctionCallArgumentError,
+            UnsupportedFunctionError,
+            FunctionInvocationError,
         ) as e:
             raise ValueError("工具类型错误：请检查工具选项和参数：" + str(e))
         except Exception as e:
             raise NetworkConnectionError() from e
-        
+
         if usage_record:
             resp.usage = UsageRecord(
                 model_name=model_info.name,
@@ -425,7 +440,6 @@ class GeminiClient(BaseClient):
                 completion_tokens=usage_record[1],
                 total_tokens=usage_record[2],
             )
-        
 
     async def get_embedding(
         self,
@@ -439,12 +453,12 @@ class GeminiClient(BaseClient):
         :return: 嵌入响应
         """
         try:
-            raw_response: types.EmbedContentResponse = await self.client.aio.models.embed_content(
-                model=model_info.model_identifier,
-                contents=embedding_input,
-                config=types.EmbedContentConfig(
-                    task_type="SEMANTIC_SIMILARITY"
-                ), 
+            raw_response: types.EmbedContentResponse = (
+                await self.client.aio.models.embed_content(
+                    model=model_info.model_identifier,
+                    contents=embedding_input,
+                    config=types.EmbedContentConfig(task_type="SEMANTIC_SIMILARITY"),
+                )
             )
         except (ClientError, ServerError) as e:
             # 重封装ClientError和ServerError为RespNotOkException
@@ -456,10 +470,10 @@ class GeminiClient(BaseClient):
 
         # 解析嵌入响应和使用情况
         if hasattr(raw_response, "embeddings"):
-            response.embedding = raw_response.embeddings[0].values 
+            response.embedding = raw_response.embeddings[0].values
         else:
             raise RespParseException(raw_response, "响应解析失败，缺失embeddings字段")
-        
+
         response.usage = UsageRecord(
             model_name=model_info.name,
             provider_name=model_info.api_provider,
